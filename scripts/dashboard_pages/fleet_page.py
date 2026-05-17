@@ -101,20 +101,23 @@ def render_fleet_kpi(title, value, wow=None, plan=None):
 # =========================================================
 @st.cache_data(show_spinner=False)
 def build_trend_chart_fleet(df_metric, metric_key, metric_label, trend_type):
+    df_metric = df_metric.copy()
+
     if trend_type == "Daily":
+        df_metric["period"] = df_metric["date"].dt.normalize()
         chart_df = (
-            df_metric.groupby(df_metric["date"].dt.normalize(), as_index=False)[["plan", "actual"]]
+            df_metric.groupby("period", as_index=False)[["plan", "actual"]]
             .mean()
-            .rename(columns={"date": "period"})
         )
     else:
+        df_metric["period"] = df_metric["week_date"].dt.normalize()
         chart_df = (
-            df_metric.groupby("week_date", as_index=False)[["plan", "actual"]]
+            df_metric.groupby("period", as_index=False)[["plan", "actual"]]
             .mean()
-            .rename(columns={"week_date": "period"})
         )
 
     chart_df = chart_df.sort_values("period")
+
     if chart_df.empty:
         return None
 
@@ -167,17 +170,18 @@ def build_trend_chart_fleet(df_metric, metric_key, metric_label, trend_type):
     fig.update_xaxes(
         tickmode="array",
         tickvals=chart_df["period"],
-        ticktext=chart_df["period"].dt.strftime("%d-%b"),
+        ticktext=chart_df["period_label"],
         tickangle=0,
         showgrid=False,
         tickfont=dict(size=15, color="#000000")
     )
 
     fig.update_yaxes(
-        showgrid=True, 
-        gridcolor="#e5e7eb", 
+        showgrid=True,
+        gridcolor="#e5e7eb",
         tickfont=dict(size=15, color="#000000")
     )
+
     return fig
 
 
@@ -256,14 +260,23 @@ def show_fleet_page(df, selected_block, selected_week):
         df["plan"] = pd.to_numeric(df["plan"], errors="coerce")
         df["actual"] = pd.to_numeric(df["actual"], errors="coerce")
 
-        df_kpi_val = df[df["metric"].notna() & (df["metric"].astype(str).str.strip() != "")]
+        # FILTER DIUBAH DI SINI: Menyaring baris non-kosong dan mengecualikan string "nan" palsu
+        df_kpi_val = df[
+            df["metric"].notna() &
+            (df["metric"].astype(str).str.strip() != "") &
+            (df["metric"].astype(str).str.lower().str.strip() != "nan")
+        ]
         if not df_kpi_val.empty:
             if df_kpi_val["plan"].isna().any() or df_kpi_val["actual"].isna().any():
                 st.error("Ditemukan nilai 'plan' atau 'actual' yang bukan angka pada data Fleet KPI.")
                 return
 
-    # Split Data
-    df_kpi = df[df["metric"].notna() & (df["metric"].astype(str).str.strip() != "")].copy()
+    # Split Data - FILTER DIUBAH DI SINI JUGA: Mengecualikan string "nan" palsu
+    df_kpi = df[
+        df["metric"].notna() &
+        (df["metric"].astype(str).str.strip() != "") &
+        (df["metric"].astype(str).str.lower().str.strip() != "nan")
+    ].copy()
     df_detail = df[df["loader_id"].notna() & (df["loader_id"].astype(str).str.strip() != "")]
 
     if not df_kpi.empty:
@@ -344,7 +357,6 @@ def show_fleet_page(df, selected_block, selected_week):
         def calc_kpi_metric(metric_name):
             df_now = kpi_df[kpi_df["metric"] == metric_name]
             
-            # Fix variable scope bug: Define df_p clearly
             df_p = pd.DataFrame()
             if not df_prev.empty:
                 df_p = df_prev[df_prev["metric"] == metric_name]

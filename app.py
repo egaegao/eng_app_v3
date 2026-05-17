@@ -8,11 +8,7 @@ st.set_page_config(
     layout="wide"
 )
 
-# 🔥 WAJIB DI SINI: Panggil fungsi login sebelum merender komponen UI lainnya
-from scripts.auth import login_screen
-login_screen()
-
-# Menampilkan detail error di client
+# Menampilkan detail error di client (Rekomendasi Bonus)
 st.set_option('client.showErrorDetails', True)
 
 from scripts.styles import apply_app_style
@@ -38,9 +34,21 @@ from scripts.dashboard_pages.action_page import show_action_page
 from scripts.dashboard_pages.findings_page import show_findings_page
 
 def format_week_option(x):
+    # Logika "All" tetap dipertahankan agar tidak error 
     if x == "All":
         return "All"
     return pd.to_datetime(x).strftime("%d-%b-%Y")
+
+# Optimalisasi Global Filter (REVISI FINAL: SAFE VERSION)
+def apply_global_filter(df, block):
+    if df is None or df.empty:
+        return df
+    
+    # Menambahkan pengecekan keberadaan kolom 'block' untuk mencegah crash
+    if block is not None and "block" in df.columns:
+        return df[df["block"] == block]
+    
+    return df
 
 apply_app_style()
 
@@ -70,25 +78,33 @@ if "data_loaded" not in st.session_state:
 if "df_storage" not in st.session_state:
     st.session_state.df_storage = {}
 
+# Inisialisasi cache filter di session_state
+if "block_options" not in st.session_state:
+    st.session_state.block_options = []
+if "week_options" not in st.session_state:
+    st.session_state.week_options = []
+
 # Jika signature berbeda (user ganti/tambah/kurangi file), reset state
 if current_upload_signature != st.session_state.upload_signature:
     st.session_state.data_loaded = False
     st.session_state.df_storage = {}
+    st.session_state.block_options = []
+    st.session_state.week_options = []
     st.session_state.upload_signature = current_upload_signature
 
-# Inisialisasi variabel data agar tidak error
+# Inisialisasi variabel data agar tidak error saat dipanggil di filter
 df_all = None
 df_produksi = None
 df_hauling = None
 df_fleet = None
 df_unit = None
-df_productivity = None 
-df_weather = None        
-df_inventory = None     
-df_fuel = None          
-df_issue = None         
-df_action = None        
-df_finding = None       
+df_productivity = None
+df_weather = None
+df_inventory = None
+df_fuel = None
+df_issue = None
+df_action = None
+df_finding = None
 
 # ===============================================
 # PROSES LOAD DATA
@@ -111,7 +127,7 @@ if uploaded_files and not st.session_state.data_loaded:
             except Exception as e:
                 st.error(f"Gagal membaca file {file.name}: {e}")
 
-    # 1. BUILD WEATHER TERPISAH (ISOLATED)
+    # 1. BUILD WEATHER TERPISAH
     if df_weather_list:
         df_weather = pd.concat(df_weather_list, ignore_index=True, sort=False)
         if "metric" in df_weather.columns:
@@ -146,7 +162,33 @@ if uploaded_files and not st.session_state.data_loaded:
     else:
         df_all = None
 
-    # SIMPAN KE SESSION
+    # CACHE FILTER OPTIONS
+    combined_for_filter_list = []
+    if df_all is not None: combined_for_filter_list.append(df_all)
+    if df_weather is not None: combined_for_filter_list.append(df_weather)
+
+    if combined_for_filter_list:
+        df_filter_temp = pd.concat(combined_for_filter_list, ignore_index=True, sort=False)
+
+        # BLOCK OPTIONS
+        if "block" in df_filter_temp.columns:
+            st.session_state.block_options = sorted(
+                df_filter_temp["block"].dropna().astype(str).str.strip().unique().tolist()
+            )
+
+        # WEEK OPTIONS
+        if "week_date" in df_filter_temp.columns:
+            st.session_state.week_options = sorted(
+                pd.to_datetime(df_filter_temp["week_date"], errors="coerce")
+                .dropna()
+                .dt.normalize()
+                .unique()
+                .tolist()
+            )
+    else:
+        st.session_state.block_options = []
+        st.session_state.week_options = []
+
     st.session_state.df_storage = {
         "df_all": df_all,
         "df_produksi": df_produksi,
@@ -182,6 +224,8 @@ if st.session_state.data_loaded:
 if not uploaded_files and st.session_state.data_loaded:
     st.session_state.data_loaded = False
     st.session_state.df_storage = {}
+    st.session_state.block_options = []
+    st.session_state.week_options = []
     st.session_state.upload_signature = None
     st.rerun()
 
@@ -190,47 +234,30 @@ if not uploaded_files and st.session_state.data_loaded:
 # ===============================================
 col1, col2, col3 = st.columns(3)
 
-# Inisialisasi df_filter di luar blok col agar bisa diakses col2
-df_filter = pd.DataFrame()
-
 with col1:
-    combined_for_filter = []
-    if df_all is not None: combined_for_filter.append(df_all)
-    if df_weather is not None: combined_for_filter.append(df_weather)
-    
-    if combined_for_filter:
-        df_filter = pd.concat(combined_for_filter, ignore_index=True, sort=False)
-        block_options = sorted(
-            df_filter["block"].dropna().astype(str).str.strip().unique().tolist()
+    block_options = st.session_state.get("block_options", [])
+    # REVISI FINAL: Kondisi eksplisit untuk selectbox block
+    if block_options:
+        selected_block = st.selectbox(
+            "Pilih Block",
+            options=block_options,
+            index=0
         )
     else:
-        block_options = []
-
-    selected_block = st.selectbox(
-        "Pilih Block",
-        options=block_options,
-        index=0 if block_options else None
-    )
+        selected_block = None
 
 with col2:
-    if not df_filter.empty and "week_date" in df_filter.columns:
-        week_values = sorted(
-            pd.to_datetime(df_filter["week_date"], errors="coerce")
-            .dropna()
-            .dt.normalize()
-            .unique()
-            .tolist()
+    week_options = st.session_state.get("week_options", [])
+    # REVISI FINAL: Kondisi eksplisit untuk selectbox week
+    if week_options:
+        selected_week = st.selectbox(
+            "Pilih Week",
+            options=week_options,
+            index=0,
+            format_func=format_week_option
         )
-        week_options = week_values
     else:
-        week_options = []
-
-    selected_week = st.selectbox(
-        "Pilih Week",
-        options=week_options,
-        index=0 if week_options else None,
-        format_func=format_week_option
-    )
+        selected_week = None
 
 with col3:
     category_all_data = []
@@ -250,155 +277,118 @@ with col3:
         index=0
     )
 
-# =========================
-# GLOBAL DATA FILTER
-# =========================
-def apply_global_filter(df, block):
-    if df is None or df.empty:
-        return df
-    df_filtered = df.copy()
-    if block:
-        df_filtered = df_filtered[df_filtered["block"] == block]
-    return df_filtered
-
-df_produksi_f = apply_global_filter(df_produksi, selected_block)
-df_hauling_f = apply_global_filter(df_hauling, selected_block)
-df_fleet_f = apply_global_filter(df_fleet, selected_block)
-df_unit_f = apply_global_filter(df_unit, selected_block)
-df_productivity_f = apply_global_filter(df_productivity, selected_block)
-df_weather_f = apply_global_filter(df_weather, selected_block)
-df_inventory_f = apply_global_filter(df_inventory, selected_block)
-df_fuel_f = apply_global_filter(df_fuel, selected_block)
-df_issue_f = apply_global_filter(df_issue, selected_block)
-df_action_f = apply_global_filter(df_action, selected_block)
-df_finding_f = apply_global_filter(df_finding, selected_block)
-
 st.markdown('</div>', unsafe_allow_html=True)
 
 # ===============================================
-# PATCH 3: UPDATE NAVIGASI MENU (KOREKSI PRIMARY BUTTON)
+# NAVIGASI MENU (RADIO BUTTON)
 # ===============================================
-menu_items = [
-    ("📊", "Produksi"),
-    ("🚛", "Hauling"),
-    ("🚜", "Fleet"),
-    ("⚙️", "Unjuk Kerja"),
-    ("⏱️", "EWH"),
-    ("⚡", "Productivity"),
-    ("🌧️", "Weather"),
-    ("📦", "Inventory"),
-    ("⛽", "Fuel"),
-    ("⚠️", "Issue"),
-    ("🛠️", "Action"),
-    ("📋", "Findings"),
-]
+selected_page = st.radio(
+    "Pilih Modul Dashboard",
+    [
+        "📊 Produksi", 
+        "🚛 Hauling", 
+        "🚜 Fleet", 
+        "🚜 Unjuk Kerja",
+        "⏱️ EWH",
+        "⚡ Productivity",
+        "🌧️ Weather",
+        "📦 Inventory",
+        "⛽ Fuel",
+        "⚠️ Issue",
+        "🛠️ Action",
+        "📋 Findings"
+    ],
+    horizontal=True
+)
 
-if "selected_page" not in st.session_state:
-    st.session_state.selected_page = "Produksi"
-
-# GRID TOMBOL NAVIGASI DENGAN TYPE="PRIMARY" UNTUK INDIKATOR AKTIF
-cols = st.columns(len(menu_items))
-
-for i, (icon, label) in enumerate(menu_items):
-    with cols[i]:
-        is_active = st.session_state.selected_page == label
-        
-        if is_active:
-            # Tombol Aktif menggunakan type="primary"
-            if st.button(
-                f"{icon}\n{label}",
-                key=f"btn_{label}",
-                use_container_width=True,
-                type="primary"
-            ):
-                pass 
-        else:
-            # Tombol Tidak Aktif menggunakan default
-            if st.button(
-                f"{icon}\n{label}",
-                key=f"btn_{label}",
-                use_container_width=True
-            ):
-                st.session_state.selected_page = label
-                st.rerun()
-
-selected_page = st.session_state.selected_page
 st.divider()
 
-# ===============================================
-# RENDER HALAMAN AKTIF
-# ===============================================
+# ==================================================================
+# RENDER HALAMAN AKTIF - LAZY FILTERING
+# ==================================================================
 try:
-    if selected_page == "Produksi":
-        if df_produksi_f is None or df_produksi_f.empty:
+    if selected_page == "📊 Produksi":
+        if df_produksi is None or df_produksi.empty:
             st.info("Data produksi belum diupload")
         else:
+            df_produksi_f = apply_global_filter(df_produksi, selected_block)
             show_production_page(df_produksi_f, selected_block, selected_week)
 
-    elif selected_page == "Hauling":
-        if df_hauling_f is None or df_hauling_f.empty:
+    elif selected_page == "🚛 Hauling":
+        if df_hauling is None or df_hauling.empty:
             st.info("Data hauling belum diupload")
         else:
+            df_hauling_f = apply_global_filter(df_hauling, selected_block)
             show_hauling_page(df_hauling_f, selected_block, selected_week)
 
-    elif selected_page == "Fleet":
-        if df_fleet_f is None or df_fleet_f.empty:
+    elif selected_page == "🚜 Fleet":
+        if df_fleet is None or df_fleet.empty:
             st.info("Data fleet belum diupload")
         else:
+            df_fleet_f = apply_global_filter(df_fleet, selected_block)
             show_fleet_page(df_fleet_f, selected_block, selected_week)
 
-    elif selected_page == "Unjuk Kerja":
-        if df_unit_f is None or df_unit_f.empty:
+    elif selected_page == "🚜 Unjuk Kerja":
+        if df_unit is None or df_unit.empty:
             st.info("Data unit belum diupload")
         else:
+            df_unit_f = apply_global_filter(df_unit, selected_block)
             show_unjuk_kerja_page(df_unit_f, selected_block, selected_week, selected_category_global)
 
-    elif selected_page == "EWH":
-        if df_unit_f is None or df_unit_f.empty:
+    elif selected_page == "⏱️ EWH":
+        if df_unit is None or df_unit.empty:
             st.info("Data EWH belum diupload")
         else:
+            df_unit_f = apply_global_filter(df_unit, selected_block)
             show_ewh_page(df_unit_f, selected_block, selected_week, selected_category_global)
 
-    elif selected_page == "Productivity":
-        if df_productivity_f is None or df_productivity_f.empty:
+    elif selected_page == "⚡ Productivity":
+        if df_productivity is None or df_productivity.empty:
             st.info("Data productivity belum diupload")
         else:
+            df_productivity_f = apply_global_filter(df_productivity, selected_block)
             show_productivity_page(df_productivity_f, selected_block, selected_week, selected_category_global)
 
-    elif selected_page == "Weather":
-        if df_weather_f is None or df_weather_f.empty:
+    elif selected_page == "🌧️ Weather":
+        if df_weather is None or df_weather.empty:
             st.info("Data weather belum diupload (Pastikan nama file mengandung kata 'weather')")
         else:
+            df_weather_f = apply_global_filter(df_weather, selected_block)
             show_weather_page(df_weather_f, selected_block, selected_week)
 
-    elif selected_page == "Inventory":
-        if df_inventory_f is None or df_inventory_f.empty:
+    elif selected_page == "📦 Inventory":
+        if df_inventory is None or df_inventory.empty:
             st.info("Data inventory belum diupload")
         else:
+            df_inventory_f = apply_global_filter(df_inventory, selected_block)
             show_inventory_page(df_inventory_f, selected_block, selected_week)
 
-    elif selected_page == "Fuel":
-        if df_fuel_f is None or df_fuel_f.empty:
+    elif selected_page == "⛽ Fuel":
+        if df_fuel is None or df_fuel.empty:
             st.info("Data fuel belum diupload")
         else:
+            df_fuel_f = apply_global_filter(df_fuel, selected_block)
             show_fuel_page(df_fuel_f, selected_block, selected_week)
 
-    elif selected_page == "Issue":
-        if df_issue_f is None or df_issue_f.empty:
+    elif selected_page == "⚠️ Issue":
+        if df_issue is None or df_issue.empty:
             st.info("Data issue belum diupload")
         else:
+            df_issue_f = apply_global_filter(df_issue, selected_block)
             show_issue_page(df_issue_f, selected_block, selected_week)
 
-    elif selected_page == "Action":
-        if df_action_f is None or df_action_f.empty:
+    elif selected_page == "🛠️ Action":
+        if df_action is None or df_action.empty:
             st.info("Data action belum diupload")
         else:
+            df_action_f = apply_global_filter(df_action, selected_block)
             show_action_page(df_action_f, selected_block, selected_week)
 
-    elif selected_page == "Findings":
-        if df_finding_f is None or df_finding_f.empty:
+    elif selected_page == "📋 Findings":
+        if df_finding is None or df_finding.empty:
             st.info("Data findings belum diupload")
         else:
+            df_finding_f = apply_global_filter(df_finding, selected_block)
             show_findings_page(df_finding_f, selected_block, selected_week)
 
 except Exception as e:

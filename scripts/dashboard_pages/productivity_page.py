@@ -4,16 +4,21 @@ import plotly.express as px
 import streamlit.components.v1 as components
 
 # ==========================================
+# GLOBAL CONFIGURATIONS & CONSTANTS
+# ==========================================
+FONT_FAMILY = "Segoe UI, Arial, sans-serif"
+
+# ==========================================
 # CACHED CHART BUILDERS (OPTIMIZATION)
 # ==========================================
 
 @st.cache_data(show_spinner=False)
-def build_fig_cat_cached(df_melt):
+def build_fig_cat_cached(df_melt, x_col):
     fig = px.bar(
         df_melt,
-        x="category",
+        x=x_col,
         y="value",
-        color="type",
+        color="series",
         barmode="group",
         text=df_melt["value"].round(1),
         template="plotly_white",
@@ -110,6 +115,58 @@ def build_snapshot_prod_cached(chart_df, title):
         font=dict(family="Inter")
     )
     return fig
+
+# ==========================================
+# REVISED FORMATTING FUNCTIONS
+# ==========================================
+
+def fmt_num(x, unit=None):
+    if pd.isna(x):
+        return "-"
+    value = f"{x:.1f}"
+    return f"{value} {unit}" if unit else value
+
+def fmt_variance(x, unit=None):
+    if pd.isna(x):
+        return "-"
+    color = "#047857" if x >= 0 else "#dc2626"
+    sign = "+" if x >= 0 else ""
+    value = f"{sign}{x:.1f}"
+    if unit:
+        value = f"{value} {unit}"
+    return f"<span style='color:{color};'>{value}</span>"
+
+def fmt_achievement(x):
+    if pd.isna(x):
+        return "-"
+    color = "#047857" if x >= 100 else "#dc2626"
+    return f"<span style='color:{color};'>{x:.1f}%</span>"
+
+def get_unit_label(df_source):
+    if "unit" not in df_source.columns:
+        return ""
+
+    units = (
+        df_source["unit"]
+        .dropna()
+        .astype(str)
+        .str.strip()
+    )
+
+    units = units[
+        (units != "") &
+        (units.str.lower() != "nan")
+    ]
+
+    unique_units = sorted(units.unique().tolist())
+
+    if len(unique_units) == 1:
+        return unique_units[0]
+
+    if len(unique_units) > 1:
+        return "mixed unit"
+
+    return ""
 
 # ==========================================
 # HELPER FUNCTIONS
@@ -292,32 +349,121 @@ def show_productivity_page(df, selected_block, selected_week, selected_category)
     st.divider()
 
     # ======================================
-    # 📊 BAR CHART (PLAN VS ACTUAL)
+    # 📊 BAR CHART BY TYPE
     # ======================================
-    st.subheader("📊 Plan vs Actual per Category (Weekly)")
+    st.subheader(
+        "📊 Plan vs Actual per Type (All Category)"
+        if selected_category == "All"
+        else f"📊 Plan vs Actual per Type - {selected_category} (Weekly)"
+    )
 
-    df_chart = df_view.groupby("category")[["plan", "actual"]].mean().reset_index()
-    df_melt = df_chart.melt(id_vars="category", var_name="type", value_name="value")
+    df_chart = (
+        df_view.groupby("type")[["plan", "actual"]]
+        .mean()
+        .reset_index()
+        .sort_values("actual", ascending=False)
+    )
 
-    fig_cat = build_fig_cat_cached(df_melt)
+    df_melt = df_chart.melt(
+        id_vars="type",
+        value_vars=["plan", "actual"],
+        var_name="series",
+        value_name="value"
+    )
+
+    fig_cat = build_fig_cat_cached(df_melt, "type")
     st.plotly_chart(fig_cat, use_container_width=True)
     st.divider()
 
     # ======================================
-    # 📦 DETAIL DATA
+    # 📦 WEEKLY SUMMARY - PROFESSIONAL
     # ======================================
-    st.subheader("📦 Detail Data (Weekly)")
-    st.caption("Data performansi unit per hari.")
+    st.subheader("📦 Weekly Summary")
+    st.caption("Ringkasan performa unit mingguan yang lebih rapi, compact, dan mudah dibaca.")
 
-    cols_show = ["date", "week_date", "block", "category", "type", "unit_type", "no_lambung", "plan", "actual"]
-    cols_to_display = [c for c in cols_show if c in df_view.columns]
-    
-    df_clean = df_view[cols_to_display].sort_values(["category", "actual"], ascending=[True, False])
+    summary_df = df_view.copy()
 
-    if "plan" in df_clean.columns: df_clean["plan"] = df_clean["plan"].round(1)
-    if "actual" in df_clean.columns: df_clean["actual"] = df_clean["actual"].round(1)
+    weekly_summary = (
+        summary_df.groupby(["category", "type", "unit_type", "no_lambung"], as_index=False)
+        .agg(
+            plan=("plan", "mean"), 
+            actual=("actual", "mean"),
+            unit=("unit", lambda x: get_unit_label(pd.DataFrame({"unit": x})))
+        )
+    )
 
-    render_clean_table(df_clean, height=400)
+    weekly_summary["variance"] = weekly_summary["actual"] - weekly_summary["plan"]
+    weekly_summary["achievement_pct"] = (
+        weekly_summary["actual"] / weekly_summary["plan"].replace(0, pd.NA) * 100
+    )
+
+    weekly_summary = weekly_summary.sort_values(
+        ["category", "type", "achievement_pct"],
+        ascending=[True, True, False]
+    )
+
+    # --- REVISED DISPLAY SUMMARY COLUMNS WITH UOM ---
+    display_summary = pd.DataFrame({
+        "Category": weekly_summary["category"].astype(str),
+        "Type": weekly_summary["type"].astype(str),
+        "Unit Type": weekly_summary["unit_type"].astype(str),
+        "Unit": weekly_summary["no_lambung"].astype(str),
+        "UoM": weekly_summary["unit"].astype(str),
+        "Plan": weekly_summary["plan"].apply(fmt_num),
+        "Actual": weekly_summary["actual"].apply(fmt_num),
+        "Variance": weekly_summary["variance"].apply(fmt_variance),
+        "Achievement": weekly_summary["achievement_pct"].apply(fmt_achievement),
+    }).head(200)
+
+    html_table = display_summary.to_html(index=False, escape=False, border=0)
+
+    # --- REVISED CSS (WEEKLY SUMMARY) ---
+    components.html(f"""
+    <div style="
+        overflow:auto;
+        max-height:480px;
+        border:1px solid #e5e7eb;
+        border-radius:14px;
+        background:#ffffff;
+        box-shadow:0 4px 14px rgba(15,23,42,0.08);
+    ">
+    <style>
+    table {{
+        border-collapse:collapse;
+        width:100%;
+        font-family:{FONT_FAMILY};
+        font-size:14px;
+    }}
+    th {{
+        background:#111827;
+        color:white;
+        padding:13px 14px;
+        text-align:center;
+        font-weight:700;
+        position:sticky;
+        top:0;
+        z-index:5;
+        white-space:nowrap;
+    }}
+    td {{
+        padding:11px 14px;
+        text-align:center;
+        border-bottom:1px solid #e5e7eb;
+        color:#111827;
+        font-weight:600;
+        white-space:nowrap;
+    }}
+    tr:nth-child(even) td {{
+        background:#f9fafb;
+    }}
+    tr:hover td {{
+        background:#f3f4f6;
+    }}
+    </style>
+    {html_table}
+    </div>
+    """, height=520, scrolling=True)
+
     st.divider()
 
     # ======================================
@@ -406,29 +552,229 @@ def show_productivity_page(df, selected_block, selected_week, selected_category)
     st.divider()
 
     # ======================================
-    # 📊 PERFORMANCE SNAPSHOT
+    # 📊 UNIT PERFORMANCE MONITOR
     # ======================================
-    st.subheader("📊 Performance Snapshot (Weekly)")
+    st.subheader("📊 Unit Performance Monitor (Weekly)")
 
-    s_col1, s_col2 = st.columns(2)
-    with s_col1:
-        snap_type_options = ["All"] + sorted(df_view["type"].dropna().unique().tolist())
-        selected_snap_type = st.selectbox("Filter Type", snap_type_options, key="snap_type")
-    with s_col2:
-        snap_sort = st.selectbox("Sort By", ["Actual", "Plan"], key="snap_sort")
+    st.caption(
+        "Pilih 1 Category dan 1 Type untuk melihat seluruh unit pada minggu terpilih."
+    )
 
-    df_snap_filtered = df_view.copy()
-    if selected_snap_type != "All":
-        df_snap_filtered = df_snap_filtered[df_snap_filtered["type"] == selected_snap_type]
+    monitor_category_options = sorted(df_view["category"].dropna().astype(str).unique().tolist())
 
-    df_snap_agg = df_snap_filtered.groupby("category")[["plan", "actual"]].mean().reset_index()
-    df_snap_agg = df_snap_agg.sort_values(snap_sort.lower(), ascending=False)
+    if not monitor_category_options:
+        st.info("Tidak ada category tersedia untuk Unit Performance Monitor.")
+    else:
+        m_col1, m_col2 = st.columns(2)
 
-    cols_snap = st.columns(3)
-    for i, row in df_snap_agg.reset_index(drop=True).iterrows():
-        chart_df = pd.DataFrame({"Type": ["Actual", "Plan"], "Value": [row["actual"], row["plan"]]})
-        fig_snap = build_snapshot_prod_cached(chart_df, row["category"])
-        with cols_snap[i % 3]:
-            st.plotly_chart(fig_snap, use_container_width=True)
+        with m_col1:
+            default_category = selected_category if selected_category != "All" else monitor_category_options[0]
+            default_category_index = (
+                monitor_category_options.index(default_category)
+                if default_category in monitor_category_options
+                else 0
+            )
+
+            monitor_category = st.selectbox(
+                "Category",
+                options=monitor_category_options,
+                index=default_category_index,
+                key="prod_unit_monitor_category"
+            )
+
+        df_monitor_category = df_view[df_view["category"].astype(str) == str(monitor_category)].copy()
+
+        monitor_type_options = sorted(df_monitor_category["type"].dropna().astype(str).unique().tolist())
+
+        with m_col2:
+            if monitor_type_options:
+                monitor_type = st.selectbox(
+                    "Type",
+                    options=monitor_type_options,
+                    index=0,
+                    key="prod_unit_monitor_type"
+                )
+            else:
+                monitor_type = None
+
+        if not monitor_type:
+            st.info("Tidak ada type tersedia untuk category yang dipilih.")
+        else:
+            df_monitor = df_monitor_category[
+                df_monitor_category["type"].astype(str) == str(monitor_type)
+            ].copy()
+
+            if df_monitor.empty:
+                st.info("Tidak ada data unit untuk kombinasi Category dan Type tersebut.")
+            else:
+                monitor_unit_label = get_unit_label(df_monitor)
+                axis_unit_label = f" ({monitor_unit_label})" if monitor_unit_label else ""
+
+                df_unit_perf = (
+                    df_monitor.groupby(["unit_type", "no_lambung"], as_index=False)
+                    .agg(
+                        plan=("plan", "mean"),
+                        actual=("actual", "mean")
+                    )
+                )
+
+                df_unit_perf["unit"] = (
+                    df_unit_perf["unit_type"].astype(str)
+                    + " - "
+                    + df_unit_perf["no_lambung"].astype(str)
+                )
+
+                df_unit_perf["achievement_pct"] = (
+                    df_unit_perf["actual"]
+                    / df_unit_perf["plan"].replace(0, pd.NA)
+                    * 100
+                )
+
+                df_unit_perf = df_unit_perf.sort_values("actual", ascending=False)
+
+                df_unit_melt = df_unit_perf.melt(
+                    id_vars=["unit", "achievement_pct"],
+                    value_vars=["plan", "actual"],
+                    var_name="series",
+                    value_name="value"
+                )
+
+                # --- REVISED COLOR DISCRETE MAP ---
+                fig_unit = px.bar(
+                    df_unit_melt,
+                    x="value",
+                    y="unit",
+                    color="series",
+                    orientation="h",
+                    barmode="group",
+                    text=df_unit_melt["value"].round(1),
+                    template="plotly_white",
+                    color_discrete_map={
+                        "actual": "#2563eb",
+                        "plan": "#f97316"
+                    },
+                    title=f"Unit Productivity - {monitor_category} / {monitor_type}"
+                )
+
+                # --- REVISED GRAPHIC TRACES STYLE ---
+                fig_unit.update_traces(
+                    textposition="outside",
+                    cliponaxis=False,
+                    textfont=dict(
+                        size=15,
+                        color="#000000",
+                        family=FONT_FAMILY
+                    ),
+                    marker=dict(
+                        opacity=0.98,
+                        line=dict(width=1.2, color="#ffffff")
+                    ),
+                    hovertemplate="<b>%{y}</b><br>%{fullData.name}: %{x:.1f}<extra></extra>"
+                )
+
+                # --- REVISED GRAPHIC LAYOUT STYLE ---
+                fig_unit.update_layout(
+                    height=max(560, min(3200, 96 * df_unit_perf["unit"].nunique())),
+                    margin=dict(l=165, r=140, t=85, b=75),
+                    legend_title_text="",
+                    legend=dict(
+                        orientation="h",
+                        yanchor="bottom",
+                        y=1.04,
+                        xanchor="right",
+                        x=1,
+                        font=dict(size=14, color="#000000", family=FONT_FAMILY)
+                    ),
+                    font=dict(family=FONT_FAMILY, size=15, color="#000000"),
+                    plot_bgcolor="#ffffff",
+                    paper_bgcolor="#ffffff",
+                    bargap=0.52,
+                    bargroupgap=0.12,
+                    xaxis=dict(
+                        title=f"Productivity{axis_unit_label}",
+                        tickfont=dict(size=14, color="#000000", family=FONT_FAMILY),
+                        title_font=dict(size=16, color="#000000", family=FONT_FAMILY),
+                        gridcolor="#e5e7eb",
+                        zeroline=False,
+                        showline=True,
+                        linecolor="#111827",
+                        linewidth=1
+                    ),
+                    yaxis=dict(
+                        title="Unit",
+                        tickfont=dict(size=16, color="#000000", family=FONT_FAMILY),
+                        title_font=dict(size=16, color="#000000", family=FONT_FAMILY),
+                        categoryorder="array",
+                        categoryarray=df_unit_perf["unit"].tolist()[::-1],
+                        showline=False
+                    )
+                )
+
+                st.plotly_chart(fig_unit, use_container_width=True)
+
+                df_unit_table = df_unit_perf.copy()
+                df_unit_table["plan"] = df_unit_table["plan"].round(1)
+                df_unit_table["actual"] = df_unit_table["actual"].round(1)
+                df_unit_table["achievement_pct"] = df_unit_table["achievement_pct"].round(1)
+
+                df_unit_table["variance"] = df_unit_table["actual"] - df_unit_table["plan"]
+
+                # --- REVISED UNIT PERFORMANCE MONITOR TABLE COLUMNS ---
+                display_unit_table = pd.DataFrame({
+                    "Unit": df_unit_table["unit"],
+                    f"Plan{axis_unit_label}": df_unit_table["plan"].apply(lambda x: fmt_num(x)),
+                    f"Actual{axis_unit_label}": df_unit_table["actual"].apply(lambda x: fmt_num(x)),
+                    f"Variance{axis_unit_label}": df_unit_table["variance"].apply(lambda x: fmt_variance(x)),
+                    "Achievement": df_unit_table["achievement_pct"].apply(fmt_achievement),
+                })
+
+                unit_html = display_unit_table.to_html(index=False, escape=False, border=0)
+
+                # --- REVISED CSS (UNIT PERFORMANCE TABLE WITH THE SAME WEEKLY SUMMARY STYLE) ---
+                components.html(f"""
+                <div style="
+                    overflow:auto;
+                    max-height:360px;
+                    border:1px solid #e5e7eb;
+                    border-radius:14px;
+                    background:white;
+                    box-shadow:0 4px 14px rgba(15,23,42,0.08);
+                ">
+                <style>
+                table {{
+                    border-collapse:collapse;
+                    width:100%;
+                    font-family:{FONT_FAMILY};
+                    font-size:14px;
+                }}
+                th {{
+                    background:#111827;
+                    color:white;
+                    padding:13px 14px;
+                    text-align:center;
+                    font-weight:700;
+                    position:sticky;
+                    top:0;
+                    z-index:5;
+                    white-space:nowrap;
+                }}
+                td {{
+                    padding:11px 14px;
+                    text-align:center;
+                    border-bottom:1px solid #e5e7eb;
+                    color:#111827;
+                    font-weight:600;
+                    white-space:nowrap;
+                }}
+                tr:nth-child(even) td {{
+                    background:#f9fafb;
+                }}
+                tr:hover td {{
+                    background:#f3f4f6;
+                }}
+                </style>
+                {unit_html}
+                </div>
+                """, height=400, scrolling=True)
 
     st.divider()

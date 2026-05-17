@@ -341,29 +341,31 @@ def build_trend_chart(df_source, metric, trend_option, current_week, selected_ra
     if df_metric.empty:
         return None
 
+    # --- IMPLEMENTASI PATCH FINAL (ANTI RENAME RISK) ---
     if trend_option == "Daily":
         chart_data = df_metric[df_metric["week_date"] == current_week].copy()
+
         if chart_data.empty:
             return None
 
+        chart_data["period"] = chart_data["date"].dt.normalize()
+
         if agg == "sum":
             chart_df = (
-                chart_data.groupby(chart_data["date"].dt.normalize())
+                chart_data.groupby("period", as_index=False)
                 .agg({"actual": "sum", "plan": "sum"})
-                .reset_index()
-                .rename(columns={"date": "period"})
             )
         else:
             chart_df = (
-                chart_data.groupby(chart_data["date"].dt.normalize())
+                chart_data.groupby("period", as_index=False)
                 .agg({"actual": "mean", "plan": "mean"})
-                .reset_index()
-                .rename(columns={"date": "period"})
             )
+
     else:
         if selected_range:
             start_r = pd.to_datetime(selected_range["start"]).normalize()
             end_r = pd.to_datetime(selected_range["end"]).normalize()
+
             chart_data = df_metric[
                 (df_metric["week_date"] >= start_r)
                 & (df_metric["week_date"] <= end_r)
@@ -374,20 +376,19 @@ def build_trend_chart(df_source, metric, trend_option, current_week, selected_ra
         if chart_data.empty:
             return None
 
+        chart_data["period"] = chart_data["week_date"].dt.normalize()
+
         if agg == "sum":
             chart_df = (
-                chart_data.groupby("week_date")
+                chart_data.groupby("period", as_index=False)
                 .agg({"actual": "sum", "plan": "sum"})
-                .reset_index()
-                .rename(columns={"week_date": "period"})
             )
         else:
             chart_df = (
-                chart_data.groupby("week_date")
+                chart_data.groupby("period", as_index=False)
                 .agg({"actual": "mean", "plan": "mean"})
-                .reset_index()
-                .rename(columns={"week_date": "period"})
             )
+    # --- END OF PATCH ---
 
     chart_df = chart_df.sort_values("period")
     chart_df["label"] = chart_df["period"].dt.strftime("%d-%b")
@@ -699,6 +700,7 @@ def show_fuel_page(df, selected_block, selected_week):
     # ===============================
     # KPI MODE (HANYA UNTUK CARD)
     # ===============================
+    st.write("")
     kpi_mode = st.radio(
         "Mode KPI (Highlights Only)",
         ["Weekly", "MTD", "YTD", "Custom"],
@@ -807,182 +809,186 @@ def show_fuel_page(df, selected_block, selected_week):
     # DAILY FUEL RATIO (ALL CATEGORY) - WEEKLY BASIS
     # ============================================
     st.write("")
-    st.markdown("### ⚡ Daily Fuel Ratio (Selected Week)")
+    with st.expander("⚡ Daily Fuel Ratio Analysis", expanded=False):
+        st.markdown("### ⚡ Daily Fuel Ratio (Selected Week)")
 
-    # Data for chart always uses df_now (Weekly)
-    df_ratio_weekly = df_now[df_now["metric"] == "fuel_ratio"].copy()
+        # Data for chart always uses df_now (Weekly)
+        df_ratio_weekly = df_now[df_now["metric"] == "fuel_ratio"].copy()
 
-    if not df_ratio_weekly.empty:
-        daily_ratio = (
-            df_ratio_weekly.groupby(["date", "category"])
-            .agg({"actual": "mean", "plan": "mean"})
-            .reset_index()
-        )
-
-        fig_ratio = px.bar(
-            daily_ratio,
-            x="date",
-            y="actual",
-            color="category",
-            barmode="group",
-            text=daily_ratio["actual"].round(2),
-            title="Daily Fuel Ratio per Category",
-            template="plotly_white"
-        )
-
-        fig_ratio.update_traces(
-            textposition="outside",
-            textfont=dict(size=14, color="#000000", family="Inter"),
-            cliponaxis=False,
-            hovertemplate="<b>%{fullData.name}</b><br>%{y:.2f}<extra></extra>"
-        )
-
-        fig_ratio.update_layout(
-            height=450,
-            margin=dict(l=50, r=20, t=80, b=60), 
-            font=dict(family="Inter", size=14, color="#000000"),
-            legend=dict(
-                orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1,
-                font=dict(size=13, color="#000000", family="Inter"),
-                itemwidth=70, itemsizing="constant"
-            ),
-            hoverlabel=dict(bgcolor="white", bordercolor="#e5e7eb", font_size=14, font_family="Inter", font_color="#000000"),
-            xaxis=dict(title=None, tickfont=dict(size=14, color="#000000"), tickangle=0),
-            yaxis=dict(title="Fuel Ratio", tickfont=dict(size=14, color="#000000"), showgrid=True, gridcolor="#e5e7eb")
-        )
-
-        st.plotly_chart(fig_ratio, use_container_width=True)
-
-        st.caption("Deviation vs Plan (negative = efficient, positive = overconsumption)")
-        with st.expander("📊 Daily Deviation from Plan (Fuel Ratio)", expanded=False):
-            delta_table = build_delta_matrix(daily_ratio)
-            render_clean_table(delta_table, height=400)
-
-    else:
-        st.info("Tidak ada data fuel ratio untuk minggu ini.")
-
-    with st.expander("📋 Detail Fuel Ratio (Actual vs Plan)", expanded=False):
         if not df_ratio_weekly.empty:
-            ratio_table = build_daily_detail_table(df_ratio_weekly, "fuel_ratio")
-            render_clean_table(ratio_table, height=520)
+            daily_ratio = (
+                df_ratio_weekly.groupby(["date", "category"])
+                .agg({"actual": "mean", "plan": "mean"})
+                .reset_index()
+            )
+
+            fig_ratio = px.bar(
+                daily_ratio,
+                x="date",
+                y="actual",
+                color="category",
+                barmode="group",
+                text=daily_ratio["actual"].round(2),
+                title="Daily Fuel Ratio per Category",
+                template="plotly_white"
+            )
+
+            fig_ratio.update_traces(
+                textposition="outside",
+                textfont=dict(size=14, color="#000000", family="Inter"),
+                cliponaxis=False,
+                hovertemplate="<b>%{fullData.name}</b><br>%{y:.2f}<extra></extra>"
+            )
+
+            fig_ratio.update_layout(
+                height=450,
+                margin=dict(l=50, r=20, t=80, b=60), 
+                font=dict(family="Inter", size=14, color="#000000"),
+                legend=dict(
+                    orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1,
+                    font=dict(size=13, color="#000000", family="Inter"),
+                    itemwidth=70, itemsizing="constant"
+                ),
+                hoverlabel=dict(bgcolor="white", bordercolor="#e5e7eb", font_size=14, font_family="Inter", font_color="#000000"),
+                xaxis=dict(title=None, tickfont=dict(size=14, color="#000000"), tickangle=0),
+                yaxis=dict(title="Fuel Ratio", tickfont=dict(size=14, color="#000000"), showgrid=True, gridcolor="#e5e7eb")
+            )
+
+            st.plotly_chart(fig_ratio, use_container_width=True)
+
+            st.caption("Deviation vs Plan (negative = efficient, positive = overconsumption)")
+            with st.expander("📊 Daily Deviation from Plan (Fuel Ratio)", expanded=False):
+                delta_table = build_delta_matrix(daily_ratio)
+                render_clean_table(delta_table, height=400)
+
+        else:
+            st.info("Tidak ada data fuel ratio untuk minggu ini.")
+
+        with st.expander("📋 Detail Fuel Ratio (Actual vs Plan)", expanded=False):
+            if not df_ratio_weekly.empty:
+                ratio_table = build_daily_detail_table(df_ratio_weekly, "fuel_ratio")
+                render_clean_table(ratio_table, height=520)
 
     # ============================================
     # DAILY FUEL CONSUMPTION (ALL CATEGORY)
     # ============================================
     st.write("")
-    st.markdown("### ⛽ Daily Fuel Consumption (Selected Week)")
+    with st.expander("⛽ Daily Fuel Consumption Analysis", expanded=False):
+        st.markdown("### ⛽ Daily Fuel Consumption (Selected Week)")
 
-    df_fuel_weekly = df_now[df_now["metric"] == "fuel"].copy()
+        df_fuel_weekly = df_now[df_now["metric"] == "fuel"].copy()
 
-    if not df_fuel_weekly.empty:
-        daily_fuel = (
-            df_fuel_weekly.groupby(["date", "category"])
-            .agg({"actual": "sum", "plan": "sum"})
-            .reset_index()
-        )
-
-        fig_fuel = px.bar(
-            daily_fuel,
-            x="date",
-            y="actual",
-            color="category",
-            barmode="group",
-            text=daily_fuel["actual"].apply(lambda x: format_number(x, 0)),
-            title="Daily Fuel Consumption per Category",
-            template="plotly_white"
-        )
-
-        fig_fuel.update_traces(
-            textposition="outside",
-            textfont=dict(size=14, color="#000000", family="Inter"),
-            cliponaxis=False,
-            hovertemplate="<b>%{fullData.name}</b><br>%{y:,.0f} L<extra></extra>"
-        )
-
-        fig_fuel.update_layout(
-            height=450,
-            margin=dict(l=50, r=20, t=80, b=60), 
-            font=dict(family="Inter", size=14, color="#000000"),
-            legend=dict(
-                orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1,
-                font=dict(size=13, color="#000000", family="Inter"),
-                itemwidth=70, itemsizing="constant"
-            ),
-            hoverlabel=dict(bgcolor="white", bordercolor="#e5e7eb", font_size=14, font_family="Inter", font_color="#000000"),
-            xaxis=dict(title=None, tickfont=dict(size=14, color="#000000"), tickangle=0),
-            yaxis=dict(title="Fuel (Liter)", tickfont=dict(size=14, color="#000000"), showgrid=True, gridcolor="#e5e7eb")
-        )
-
-        st.plotly_chart(fig_fuel, use_container_width=True)
-
-        with st.expander("📊 Daily Deviation from Plan (Fuel Consumption)", expanded=False):
-            delta_table_fuel = build_delta_matrix(daily_fuel)
-            render_clean_table(delta_table_fuel, height=400)
-    else:
-        st.info("Tidak ada data fuel untuk minggu ini.")
-
-    with st.expander("📋 Detail Fuel Liter (Actual vs Plan)", expanded=False):
         if not df_fuel_weekly.empty:
-            fuel_table = build_daily_detail_table(df_fuel_weekly, "fuel")
-            render_clean_table(fuel_table, height=520)
+            daily_fuel = (
+                df_fuel_weekly.groupby(["date", "category"])
+                .agg({"actual": "sum", "plan": "sum"})
+                .reset_index()
+            )
+
+            fig_fuel = px.bar(
+                daily_fuel,
+                x="date",
+                y="actual",
+                color="category",
+                barmode="group",
+                text=daily_fuel["actual"].apply(lambda x: format_number(x, 0)),
+                title="Daily Fuel Consumption per Category",
+                template="plotly_white"
+            )
+
+            fig_fuel.update_traces(
+                textposition="outside",
+                textfont=dict(size=14, color="#000000", family="Inter"),
+                cliponaxis=False,
+                hovertemplate="<b>%{fullData.name}</b><br>%{y:,.0f} L<extra></extra>"
+            )
+
+            fig_fuel.update_layout(
+                height=450,
+                margin=dict(l=50, r=20, t=80, b=60), 
+                font=dict(family="Inter", size=14, color="#000000"),
+                legend=dict(
+                    orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1,
+                    font=dict(size=13, color="#000000", family="Inter"),
+                    itemwidth=70, itemsizing="constant"
+                ),
+                hoverlabel=dict(bgcolor="white", bordercolor="#e5e7eb", font_size=14, font_family="Inter", font_color="#000000"),
+                xaxis=dict(title=None, tickfont=dict(size=14, color="#000000"), tickangle=0),
+                yaxis=dict(title="Fuel (Liter)", tickfont=dict(size=14, color="#000000"), showgrid=True, gridcolor="#e5e7eb")
+            )
+
+            st.plotly_chart(fig_fuel, use_container_width=True)
+
+            with st.expander("📊 Daily Deviation from Plan (Fuel Consumption)", expanded=False):
+                delta_table_fuel = build_delta_matrix(daily_fuel)
+                render_clean_table(delta_table_fuel, height=400)
+        else:
+            st.info("Tidak ada data fuel untuk minggu ini.")
+
+        with st.expander("📋 Detail Fuel Liter (Actual vs Plan)", expanded=False):
+            if not df_fuel_weekly.empty:
+                fuel_table = build_daily_detail_table(df_fuel_weekly, "fuel")
+                render_clean_table(fuel_table, height=520)
 
     # ============================================
     # 📈 TREND ACTUAL VS PLAN
     # ============================================
     st.write("")
-    st.markdown("### 📈 Trend Actual vs Plan")
-    st.markdown("---")
+    with st.expander("📈 Trend Analysis", expanded=False):
+        st.markdown("### 📈 Trend Actual vs Plan")
+        st.markdown("---")
 
-    col_ctrl1, col_ctrl2, col_ctrl3 = st.columns(3)
+        col_ctrl1, col_ctrl2, col_ctrl3 = st.columns(3)
 
-    with col_ctrl1:
-        trend_option = st.radio("Trend Type", ["Daily", "Weekly"], horizontal=True, key="fuel_trend_type")
+        with col_ctrl1:
+            trend_option = st.radio("Trend Type", ["Daily", "Weekly"], horizontal=True, key="fuel_trend_type")
 
-    with col_ctrl2:
-        trend_cats = sorted(df_now["category"].unique().tolist())
-        category_filter = st.selectbox("Category Filter", ["All"] + trend_cats, key="fuel_trend_category")
+        with col_ctrl2:
+            trend_cats = sorted(df_now["category"].unique().tolist())
+            category_filter = st.selectbox("Category Filter", ["All"] + trend_cats, key="fuel_trend_category")
 
-    selected_range_trend = None
-    if trend_option == "Weekly":
-        with col_ctrl3:
-            week_windows = []
-            w_size = 8
-            for i in range(0, len(all_weeks), w_size):
-                chunk = all_weeks[max(0, len(all_weeks) - (i + w_size)): len(all_weeks) - i]
-                if chunk:
-                    label = f"{chunk[0].strftime('%d-%b')} → {chunk[-1].strftime('%d-%b')}"
-                    week_windows.append({"label": label, "start": chunk[0], "end": chunk[-1]})
-            if week_windows:
-                selected_range_trend = st.selectbox("Range Minggu", options=week_windows, format_func=lambda x: x["label"], key="fuel_week_range")
+        selected_range_trend = None
+        if trend_option == "Weekly":
+            with col_ctrl3:
+                week_windows = []
+                w_size = 8
+                for i in range(0, len(all_weeks), w_size):
+                    chunk = all_weeks[max(0, len(all_weeks) - (i + w_size)): len(all_weeks) - i]
+                    if chunk:
+                        label = f"{chunk[0].strftime('%d-%b')} → {chunk[-1].strftime('%d-%b')}"
+                        week_windows.append({"label": label, "start": chunk[0], "end": chunk[-1]})
+                if week_windows:
+                    selected_range_trend = st.selectbox("Range Minggu", options=week_windows, format_func=lambda x: x["label"], key="fuel_week_range")
 
-    trend_items = [("fuel_ratio", "Fuel Ratio"), ("fuel", "Fuel Liter")]
-    for i in range(0, len(trend_items), 2):
-        t_col1, t_col2 = st.columns(2)
-        pair = trend_items[i:i + 2]
-        for col, (m, l) in zip([t_col1, t_col2], pair):
-            fig_trend = build_trend_chart(
-                df_source=df, metric=m, trend_option=trend_option, 
-                current_week=current_week, selected_range=selected_range_trend, 
-                category_filter=category_filter
-            )
-            with col:
-                if fig_trend: st.plotly_chart(fig_trend, use_container_width=True)
-                else: st.info(f"Tidak ada data trend untuk {l}.")
+        trend_items = [("fuel_ratio", "Fuel Ratio"), ("fuel", "Fuel Liter")]
+        for i in range(0, len(trend_items), 2):
+            t_col1, t_col2 = st.columns(2)
+            pair = trend_items[i:i + 2]
+            for col, (m, l) in zip([t_col1, t_col2], pair):
+                fig_trend = build_trend_chart(
+                    df_source=df, metric=m, trend_option=trend_option, 
+                    current_week=current_week, selected_range=selected_range_trend, 
+                    category_filter=category_filter
+                )
+                with col:
+                    if fig_trend: st.plotly_chart(fig_trend, use_container_width=True)
+                    else: st.info(f"Tidak ada data trend untuk {l}.")
 
     # ============================================
     # 📊 SNAPSHOT WEEKLY
     # ============================================
     st.write("")
-    st.markdown("### 📊 Weekly Snapshot (Aggregation)")
-    st.markdown("---")
+    with st.expander("📊 Weekly Snapshot", expanded=False):
+        st.markdown("### 📊 Weekly Snapshot (Aggregation)")
+        st.markdown("---")
 
-    fig_snap_ratio = build_snapshot_chart(df_now, "fuel_ratio")
-    if fig_snap_ratio:
-        st.plotly_chart(fig_snap_ratio, use_container_width=True)
+        fig_snap_ratio = build_snapshot_chart(df_now, "fuel_ratio")
+        if fig_snap_ratio:
+            st.plotly_chart(fig_snap_ratio, use_container_width=True)
 
-    st.write("")
-    fig_snap_fuel = build_snapshot_chart(df_now, "fuel")
-    if fig_snap_fuel:
-        st.plotly_chart(fig_snap_fuel, use_container_width=True)
+        st.write("")
+        fig_snap_fuel = build_snapshot_chart(df_now, "fuel")
+        if fig_snap_fuel:
+            st.plotly_chart(fig_snap_fuel, use_container_width=True)
 
-    st.divider()
+        st.divider()

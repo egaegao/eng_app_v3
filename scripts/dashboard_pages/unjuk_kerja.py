@@ -91,18 +91,22 @@ def build_trend_chart_unit(df_metric, metric_key, metric_label, trend_type):
     df_metric["plan"] = pd.to_numeric(df_metric["plan"], errors="coerce")
     df_metric["actual"] = pd.to_numeric(df_metric["actual"], errors="coerce")
 
-    # Aggregation logic
+    # PATCH FINAL: Penerapan period eksplisit untuk menghindari rename-risk pattern
     if trend_type == "Daily":
+        df_metric = df_metric.copy()
+        df_metric["period"] = pd.to_datetime(df_metric["date"]).dt.normalize()
+
         chart_df = (
-            df_metric.groupby("date", as_index=False, observed=True)[["plan", "actual"]]
+            df_metric.groupby("period", as_index=False, observed=True)[["plan", "actual"]]
             .mean()
-            .rename(columns={"date": "period"})
         )
     else:
+        df_metric = df_metric.copy()
+        df_metric["period"] = pd.to_datetime(df_metric["week_norm"]).dt.normalize()
+
         chart_df = (
-            df_metric.groupby("week_date", as_index=False, observed=True)[["plan", "actual"]]
+            df_metric.groupby("period", as_index=False, observed=True)[["plan", "actual"]]
             .mean()
-            .rename(columns={"week_date": "period"})
         )
 
     chart_df = chart_df.sort_values("period")
@@ -234,11 +238,12 @@ def prepare_trend_data(df):
     if df.empty:
         return pd.DataFrame()
 
-    base_cols = ["date", "week_date", "block", "unit_type", "no_lambung", "type", "category"]
+    base_cols = ["date", "week_norm", "block", "unit_type", "no_lambung", "type", "category"]
     existing_base = [c for c in base_cols if c in df.columns]
 
     df_list = []
     
+    # Perbaikan logic: Menghindari redundant mapping & performa loop lambat
     metric_pairs = {
         "pa": ["pa_plan", "pa_actual"],
         "ma": ["ma_plan", "ma_actual"],
@@ -275,7 +280,7 @@ def build_perf_table_source(df_current):
             "ua_plan", "ua_actual"]
     
     available_cols = [c for c in cols if c in df_current.columns]
-    x = df_current[available_cols].copy()
+    x = df_current[available_cols]
     df_list = []
 
     for m in ["pa", "ma", "ua"]:
@@ -392,15 +397,22 @@ def show_unjuk_kerja_page(df, selected_block, selected_week, selected_category):
     </style>
     """, unsafe_allow_html=True)
 
-    df_block = df.copy()
-    
+    df_block = df
+
+    # PATCH: Menggunakan .assign untuk menghindari SettingWithCopyWarning
+    if "date_norm" not in df_block.columns or "week_norm" not in df_block.columns:
+        df_block = df_block.assign(
+            date_norm=pd.to_datetime(df_block["date"], errors="coerce").dt.normalize(),
+            week_norm=pd.to_datetime(df_block["week_date"], errors="coerce").dt.normalize()
+        )
+
     st.markdown("### 🚜 Unjuk Kerja")
     st.markdown("---")
 
     selected_week_ts = pd.to_datetime(selected_week).normalize()
 
-    df_current = df_block[df_block["week_date"].dt.normalize() == selected_week_ts].copy()
-    df_filtered = df_current.copy()
+    df_current = df_block[df_block["week_norm"] == selected_week_ts]
+    df_filtered = df_current
 
     if selected_category != "All":
         df_filtered = df_filtered[df_filtered["category"] == selected_category]
@@ -409,9 +421,7 @@ def show_unjuk_kerja_page(df, selected_block, selected_week, selected_category):
         st.warning(f"Data tidak ditemukan untuk minggu tersebut.")
         return
 
-    # ===============================
     # KPI MODE - ONLY FOR KPI CARDS
-    # ===============================
     kpi_mode = st.radio(
         "Mode KPI",
         ["Weekly", "MTD", "YTD", "Custom"],
@@ -428,47 +438,42 @@ def show_unjuk_kerja_page(df, selected_block, selected_week, selected_category):
     else:
         custom_range = None
 
-    # PATCH: NORMALIZE KPI SOURCE DATE
-    df_kpi_source = df_block.copy()
-    df_kpi_source["date"] = pd.to_datetime(df_kpi_source["date"], errors="coerce").dt.normalize()
-    df_kpi_source["week_date"] = pd.to_datetime(df_kpi_source["week_date"], errors="coerce").dt.normalize()
+    df_kpi_source = df_block
 
     if kpi_mode == "Weekly":
-        df_kpi = df_filtered.copy()
+        df_kpi = df_filtered
 
     elif kpi_mode == "MTD":
         start_month = selected_week_ts.replace(day=1)
         df_kpi = df_kpi_source[
-            (df_kpi_source["date"] >= start_month) &
-            (df_kpi_source["date"] <= selected_week_ts)
-        ].copy()
+            (df_kpi_source["date_norm"] >= start_month) &
+            (df_kpi_source["date_norm"] <= selected_week_ts)
+        ]
 
     elif kpi_mode == "YTD":
         start_year = selected_week_ts.replace(month=1, day=1)
         df_kpi = df_kpi_source[
-            (df_kpi_source["date"] >= start_year) &
-            (df_kpi_source["date"] <= selected_week_ts)
-        ].copy()
+            (df_kpi_source["date_norm"] >= start_year) &
+            (df_kpi_source["date_norm"] <= selected_week_ts)
+        ]
 
     elif kpi_mode == "Custom" and custom_range and len(custom_range) == 2:
-        # PATCH: NORMALIZE CUSTOM RANGE
         start = pd.to_datetime(custom_range[0]).normalize()
         end = pd.to_datetime(custom_range[1]).normalize()
         df_kpi = df_kpi_source[
-            (df_kpi_source["date"] >= start) &
-            (df_kpi_source["date"] <= end)
-        ].copy()
-
+            (df_kpi_source["date_norm"] >= start) &
+            (df_kpi_source["date_norm"] <= end)
+        ]
     else:
-        df_kpi = df_filtered.copy()
+        df_kpi = df_filtered
 
     if selected_category != "All":
         df_kpi = df_kpi[df_kpi["category"] == selected_category]
 
     if df_kpi.empty:
-        df_kpi = df_filtered.copy()
+        df_kpi = df_filtered
 
-    # KPI CALCULATION ONLY
+    # KPI CALCULATION
     pa = df_kpi["pa_actual"].mean()
     pa_plan = df_kpi["pa_plan"].mean()
     pa_delta = pa - pa_plan
@@ -481,15 +486,15 @@ def show_unjuk_kerja_page(df, selected_block, selected_week, selected_category):
     ua_plan = df_kpi["ua_plan"].mean()
     ua_delta = ua - ua_plan
 
-    # WoW CALCULATION - WEEKLY ONLY
-    all_weeks = sorted(df_block["week_date"].dropna().dt.normalize().unique())
+    # WoW CALCULATION
+    all_weeks = sorted(df_block["week_norm"].dropna().unique())
     prev_week = None
     if selected_week_ts in all_weeks:
         idx = all_weeks.index(selected_week_ts)
         if idx > 0:
             prev_week = all_weeks[idx - 1]
 
-    df_prev = df_block[df_block["week_date"].dt.normalize() == prev_week] if prev_week else pd.DataFrame()
+    df_prev = df_block[df_block["week_norm"] == prev_week] if prev_week else pd.DataFrame()
 
     if not df_prev.empty and selected_category != "All":
         df_prev_cat = df_prev[df_prev["category"] == selected_category]
@@ -519,15 +524,11 @@ def show_unjuk_kerja_page(df, selected_block, selected_week, selected_category):
     col1, col2, col3, col4 = st.columns(4)
 
     with col1:
-        # PATCH: TOTAL UNIT BASED ON CURRENT WEEK SNAPSHOT
         render_unit_kpi("Total Unit", f"{df_current['no_lambung'].nunique()}", None, None)
-
     with col2:
         render_unit_kpi("Avg PA", f"{format_number(pa)}%", pa_delta, pa_wow)
-
     with col3:
         render_unit_kpi("Avg MA", f"{format_number(ma)}%", ma_delta, ma_wow)
-
     with col4:
         render_unit_kpi("Avg UA", f"{format_number(ua)}%", ua_delta, ua_wow)
 
@@ -596,7 +597,7 @@ def show_unjuk_kerja_page(df, selected_block, selected_week, selected_category):
         with col_snap2:
             snap_metric = st.selectbox("Pilih Metric", ["PA", "MA", "UA", "HM"], key="snapshot_metric")
 
-        df_snap = df_block.copy()
+        df_snap = df_block
         if selected_category != "All":
             df_snap = df_snap[df_snap["category"] == selected_category]
         if selected_snap_type != "All":
@@ -635,7 +636,6 @@ def show_unjuk_kerja_page(df, selected_block, selected_week, selected_category):
                     c_df = pd.DataFrame({"Type": ["Plan", "Actual"], "Value": [p_val, a_val]})
                 
                 c_df["label"] = c_df["Value"].apply(fmt)
-                
                 fig_s = build_snapshot_chart_unit(c_df, f"{t} - {snap_metric}")
                 
                 with cols_snap[i % 3]:
@@ -653,7 +653,7 @@ def show_unjuk_kerja_page(df, selected_block, selected_week, selected_category):
         ).reset_index().sort_values("pa_actual_avg", ascending=False)
     )
     
-    weekly_summary_fmt = weekly_summary.copy()
+    weekly_summary_fmt = weekly_summary
     for col in weekly_summary_fmt.columns:
         if "avg" in col or "total" in col:
             weekly_summary_fmt[col] = weekly_summary_fmt[col].round(1)
@@ -667,7 +667,7 @@ def show_unjuk_kerja_page(df, selected_block, selected_week, selected_category):
             st.markdown("##### Tabel Harian (Hour Meter)")
             pivot_hm = df_current.pivot_table(index=["unit_type", "no_lambung"], columns="date", values="hm", aggfunc="mean", observed=True)
             if not pivot_hm.empty:
-                pivot_hm_fmt = pivot_hm.copy().round(2)
+                pivot_hm_fmt = pivot_hm.round(2)
                 pivot_hm_fmt.columns = pd.to_datetime(pivot_hm_fmt.columns).strftime("%d-%b")
                 pivot_hm_fmt = pivot_hm_fmt.reset_index()
                 pivot_hm_fmt.columns.name = None 
@@ -679,7 +679,7 @@ def show_unjuk_kerja_page(df, selected_block, selected_week, selected_category):
             if not df_p_table.empty:
                 pivot_perf = df_p_table.pivot_table(index=["Unit", "Metric"], columns="date", values="Value", aggfunc="mean", observed=True)
                 if not pivot_perf.empty:
-                    pivot_perf_fmt = pivot_perf.copy().round(1)
+                    pivot_perf_fmt = pivot_perf.round(1)
                     pivot_perf_fmt.columns = pd.to_datetime(pivot_perf_fmt.columns).strftime("%d-%b")
                     pivot_perf_fmt = pivot_perf_fmt.reset_index()
                     pivot_perf_fmt.columns.name = None 
@@ -687,37 +687,40 @@ def show_unjuk_kerja_page(df, selected_block, selected_week, selected_category):
 
     # 7. TOP & WORST UNIT 
     st.markdown("---")
-    st.markdown("### 🏆 Top & Worst Unit")
-    rank_mode = st.selectbox("Ranking Based On", ["ALL (PA+MA+UA)", "PA", "MA", "UA", "HM"], key="rank_mode")
-
-    rank_df = df_filtered.groupby(["no_lambung", "unit_type", "category"], as_index=False, observed=True).agg(
-        pa_actual=("pa_actual", "mean"), ma_actual=("ma_actual", "mean"),
-        ua_actual=("ua_actual", "mean"), hm_total=("hm", "sum")
-    )
     
-    if rank_mode == "PA": rank_df["score"] = rank_df["pa_actual"]
-    elif rank_mode == "MA": rank_df["score"] = rank_df["ma_actual"]
-    elif rank_mode == "UA": rank_df["score"] = rank_df["ua_actual"]
-    elif rank_mode == "HM": rank_df["score"] = rank_df["hm_total"]
-    else: rank_df["score"] = (rank_df["pa_actual"] + rank_df["ma_actual"] + rank_df["ua_actual"]) / 3
-    
-    top = rank_df.sort_values("score", ascending=False).head(5)
-    worst = rank_df.sort_values("score", ascending=True).head(5)
+    with st.expander("🏆 Top & Worst Unit", expanded=False):
+        st.markdown("### 🏆 Top & Worst Unit")
+        rank_mode = st.selectbox("Ranking Based On", ["ALL (PA+MA+UA)", "PA", "MA", "UA", "HM"], key="rank_mode")
 
-    colA, colB = st.columns(2)
-    d_cols = ["no_lambung", "unit_type", "pa_actual", "ma_actual", "ua_actual", "hm_total"]
-    with colA:
-        st.markdown("🏆 **Top 5**")
-        render_clean_table(top[d_cols].round(1))
-    with colB:
-        st.markdown("⚠️ **Worst 5**")
-        render_clean_table(worst[d_cols].round(1))
+        rank_df = df_filtered.groupby(["no_lambung", "unit_type", "category"], as_index=False, observed=True).agg(
+            pa_actual=("pa_actual", "mean"), ma_actual=("ma_actual", "mean"),
+            ua_actual=("ua_actual", "mean"), hm_total=("hm", "sum")
+        )
+        
+        if rank_mode == "PA": rank_df["score"] = rank_df["pa_actual"]
+        elif rank_mode == "MA": rank_df["score"] = rank_df["ma_actual"]
+        elif rank_mode == "UA": rank_df["score"] = rank_df["ua_actual"]
+        elif rank_mode == "HM": rank_df["score"] = rank_df["hm_total"]
+        else: rank_df["score"] = (rank_df["pa_actual"] + rank_df["ma_actual"] + rank_df["ua_actual"]) / 3
+        
+        top = rank_df.sort_values("score", ascending=False).head(5)
+        worst = rank_df.sort_values("score", ascending=True).head(5)
+
+        colA, colB = st.columns(2)
+        d_cols = ["no_lambung", "unit_type", "pa_actual", "ma_actual", "ua_actual", "hm_total"]
+        with colA:
+            st.markdown("🏆 **Top 5**")
+            render_clean_table(top[d_cols].round(1))
+        with colB:
+            st.markdown("⚠️ **Worst 5**")
+            render_clean_table(worst[d_cols].round(1))
 
     # 8. TREND PERFORMANCE
     st.markdown("---")
     st.markdown("## 📈 Trend Performance")
-    trend_source = df_block.copy()
-    all_weeks_sorted = sorted(trend_source["week_date"].dropna().dt.normalize().unique().tolist())
+    
+    trend_source = df_block
+    all_weeks_sorted = sorted(trend_source["week_norm"].dropna().unique().tolist())
 
     week_windows = []
     w_size = 10
@@ -761,10 +764,11 @@ def show_unjuk_kerja_page(df, selected_block, selected_week, selected_category):
             trend_source = trend_source[(trend_source["unit_type"].astype(str) == u_type_s) & (trend_source["no_lambung"].astype(str) == u_no_s)]
     
     if trend_type == "Weekly" and start_w:
-        trend_source = trend_source[(trend_source["week_date"].dt.normalize() >= start_w) & (trend_source["week_date"].dt.normalize() <= end_w)]
+        trend_source = trend_source[(trend_source["week_norm"] >= start_w) & (trend_source["week_norm"] <= end_w)]
     elif trend_type == "Daily":
-        trend_source = trend_source[trend_source["week_date"].dt.normalize() == selected_week_ts]
+        trend_source = trend_source[trend_source["week_norm"] == selected_week_ts]
 
+    # FIX REDUNDANT: Memanggil fungsi utama directly tanpa wrapper redundant
     trend_long = prepare_trend_data(trend_source)
     
     if not trend_long.empty:

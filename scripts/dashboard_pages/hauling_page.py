@@ -100,19 +100,24 @@ def build_trend_chart_hauling(df_metric, metric_key, metric_label, trend_type):
     else:
         agg_func = "mean"
 
+    # --- REVISI BAGIAN AWAL LOGIKA PERIOD & GROUPBY ---
     if trend_type == "Daily":
+        df_metric = df_metric.dropna(subset=["date"]).copy()
+        df_metric["period"] = df_metric["date"].dt.normalize()
+
         chart_df = (
-            df_metric.groupby(df_metric["date"].dt.normalize(), as_index=False)[["plan", "actual"]]
-            .sum()
-            .rename(columns={"date": "period"})
+            df_metric.groupby("period", as_index=False)
+            .agg({"plan": agg_func, "actual": agg_func})
         )
     else:
         df_metric = df_metric.dropna(subset=["week_date"]).copy()
+        df_metric["period"] = df_metric["week_date"].dt.normalize()
+
         chart_df = (
-            df_metric.groupby("week_date", as_index=False)
+            df_metric.groupby("period", as_index=False)
             .agg({"plan": agg_func, "actual": agg_func})
-            .rename(columns={"week_date": "period"})
         )
+    # --------------------------------------------------
 
     chart_df = chart_df.sort_values("period")
     if chart_df.empty:

@@ -497,90 +497,99 @@ def show_ewh_page(df, selected_block, selected_week, selected_category):
 
     st.markdown("---")
     
-    st.markdown("### 🏆 Top & Worst Unit")
-    rank_mode = st.selectbox("Ranking Based On", ["Actual EWH", "Achievement vs Plan"], key="ewh_rank_mode")
+    # ==========================================
+    # IMPLEMENTASI LAZY RENDER: TOP & WORST UNIT
+    # ==========================================
+    with st.expander("🏆 Top & Worst Unit", expanded=False):
+        st.markdown("### 🏆 Top & Worst Unit")
+        rank_mode = st.selectbox("Ranking Based On", ["Actual EWH", "Achievement vs Plan"], key="ewh_rank_mode")
 
-    rank_df = (
-        df_filtered.groupby(["no_lambung", "unit_type", "category"], as_index=False, observed=True)
-        .agg(ewh_plan=("ewh_plan", "mean"), ewh_actual=("ewh_actual", "mean"))
-    )
-    rank_df["achievement_pct"] = (rank_df["ewh_actual"] / rank_df["ewh_plan"].replace(0, 0.001)) * 100
-    rank_df["score"] = rank_df["ewh_actual"] if rank_mode == "Actual EWH" else rank_df["achievement_pct"]
+        rank_df = (
+            df_filtered.groupby(["no_lambung", "unit_type", "category"], as_index=False, observed=True)
+            .agg(ewh_plan=("ewh_plan", "mean"), ewh_actual=("ewh_actual", "mean"))
+        )
+        rank_df["achievement_pct"] = (rank_df["ewh_actual"] / rank_df["ewh_plan"].replace(0, 0.001)) * 100
+        rank_df["score"] = rank_df["ewh_actual"] if rank_mode == "Actual EWH" else rank_df["achievement_pct"]
 
-    top = rank_df.sort_values("score", ascending=False).head(5)
-    worst = rank_df.sort_values("score", ascending=True).head(5)
+        top = rank_df.sort_values("score", ascending=False).head(5)
+        worst = rank_df.sort_values("score", ascending=True).head(5)
 
-    colA, colB = st.columns(2)
-    d_cols = ["no_lambung", "unit_type", "category", "ewh_plan", "ewh_actual", "achievement_pct"]
+        colA, colB = st.columns(2)
+        d_cols = ["no_lambung", "unit_type", "category", "ewh_plan", "ewh_actual", "achievement_pct"]
 
-    with colA:
-        st.markdown("🏆 **Top 5**")
-        render_clean_table(top[d_cols].round(1))
-    with colB:
-        st.markdown("⚠️ **Worst 5**")
-        render_clean_table(worst[d_cols].round(1))
+        with colA:
+            st.markdown("🏆 **Top 5**")
+            render_clean_table(top[d_cols].round(1))
+        with colB:
+            st.markdown("⚠️ **Worst 5**")
+            render_clean_table(worst[d_cols].round(1))
 
     st.markdown("---")
     
-    # --- TREND CALCULATION ---
-    st.markdown("## 📈 Trend EWH")
-    trend_source = df_block.copy()
-    
-    if selected_category != "All":
-        df_trend_cat = trend_source[
-            trend_source["category"].astype(str).str.strip() == str(selected_category).strip()
-        ]
-        if not df_trend_cat.empty:
-            trend_source = df_trend_cat
-
-    col_t1, col_t2, col_t3, col_t4 = st.columns([1, 1, 2, 2])
-    with col_t1:
-        trend_type = st.radio("Period", ["Daily", "Weekly"], horizontal=True, key="ewh_trend_r")
-    with col_t2:
-        t_opts = ["All"] + sorted(trend_source["type"].dropna().unique().tolist())
-        sel_type = st.selectbox("Type", t_opts, key="ewh_trend_t")
-    with col_t4:
-        df_u_src = trend_source[trend_source["type"] == sel_type] if sel_type != "All" else trend_source
-        u_opts = ["All"] + sorted(df_u_src["unit_key"].unique().tolist())
-        sel_unit = st.selectbox("Unit Drilldown", u_opts, key="ewh_trend_u")
-
-    if sel_type != "All":
-        trend_source = trend_source[trend_source["type"] == sel_type]
-    if sel_unit != "All":
-        trend_source = trend_source[trend_source["unit_key"] == sel_unit]
-
-    if trend_type == "Weekly":
-        all_weeks_trend = sorted(trend_source["week_date_norm"].dropna().unique().tolist())
-        week_windows = []
-        w_size = 10
-        for i in range(0, len(all_weeks_trend), w_size):
-            chunk = all_weeks_trend[max(0, len(all_weeks_trend) - (i + w_size)): len(all_weeks_trend) - i]
-            if chunk:
-                label = f"Range: {chunk[0].strftime('%d-%b')} - {chunk[-1].strftime('%d-%b')}"
-                week_windows.append({"label": label, "start": chunk[0], "end": chunk[-1]})
+    # ==========================================
+    # IMPLEMENTASI LAZY RENDER: TREND EWH BLOCK
+    # ==========================================
+    with st.expander("📈 Trend EWH", expanded=False):
+        st.markdown("## 📈 Trend EWH")
+        trend_source = df_block.copy()
         
-        if week_windows:
-            with col_t3:
-                sel_win = st.selectbox("Range Minggu", options=week_windows, format_func=lambda x: x["label"], key="ewh_trend_win")
-                trend_source = trend_source[(trend_source["week_date_norm"] >= sel_win["start"]) & (trend_source["week_date_norm"] <= sel_win["end"])]
-    else:
-        trend_source = trend_source[trend_source["week_date_norm"] == selected_week_ts]
+        if selected_category != "All":
+            df_trend_cat = trend_source[
+                trend_source["category"].astype(str).str.strip() == str(selected_category).strip()
+            ]
+            if not df_trend_cat.empty:
+                trend_source = df_trend_cat
 
-    trend_final = prepare_ewh_trend(trend_source)
-    if trend_final.empty:
-        st.info("No trend data available for current filter.")
-    else:
-        available_categories = sorted(trend_final["category"].unique().tolist())
-        preferred_order = ["OB Removal", "Coal Getting", "Coal Hauling"]
-        ordered_categories = [c for c in preferred_order if c in available_categories] + [c for c in available_categories if c not in preferred_order]
+        col_t1, col_t2, col_t3, col_t4 = st.columns([1, 1, 2, 2])
+        with col_t1:
+            trend_type = st.radio("Period", ["Daily", "Weekly"], horizontal=True, key="ewh_trend_r")
+        with col_t2:
+            t_opts = ["All"] + sorted(trend_source["type"].dropna().unique().tolist())
+            sel_type = st.selectbox("Type", t_opts, key="ewh_trend_t")
+        with col_t4:
+            df_u_src = trend_source[trend_source["type"] == sel_type] if sel_type != "All" else trend_source
+            u_opts = ["All"] + sorted(df_u_src["unit_key"].unique().tolist())
+            sel_unit = st.selectbox("Unit Drilldown", u_opts, key="ewh_trend_u")
 
-        for i in range(0, len(ordered_categories), 2):
-            col_l, col_r = st.columns(2)
-            for idx, col in [(i, col_l), (i+1, col_r)]:
-                if idx < len(ordered_categories):
-                    cat = ordered_categories[idx]
-                    df_cat = trend_final[trend_final["category"] == cat]
-                    with col:
-                        fig = build_trend_chart_ewh(df_cat, f"EWH - {cat}", trend_type)
-                        if fig: st.plotly_chart(fig, use_container_width=True)
-                        else: st.info(f"No data for {cat}")
+        if sel_type != "All":
+            trend_source = trend_source[trend_source["type"] == sel_type]
+        if sel_unit != "All":
+            trend_source = trend_source[trend_source["unit_key"] == sel_unit]
+
+        if trend_type == "Weekly":
+            all_weeks_trend = sorted(trend_source["week_date_norm"].dropna().unique().tolist())
+            week_windows = []
+            w_size = 10
+            for i in range(0, len(all_weeks_trend), w_size):
+                chunk = all_weeks_trend[max(0, len(all_weeks_trend) - (i + w_size)): len(all_weeks_trend) - i]
+                if chunk:
+                    label = f"Range: {chunk[0].strftime('%d-%b')} - {chunk[-1].strftime('%d-%b')}"
+                    week_windows.append({"label": label, "start": chunk[0], "end": chunk[-1]})
+            
+            if week_windows:
+                with col_t3:
+                    sel_win = st.selectbox("Range Minggu", options=week_windows, format_func=lambda x: x["label"], key="ewh_trend_win")
+                    trend_source = trend_source[(trend_source["week_date_norm"] >= sel_win["start"]) & (trend_source["week_date_norm"] <= sel_win["end"])]
+        else:
+            trend_source = trend_source[trend_source["week_date_norm"] == selected_week_ts]
+
+        trend_final = prepare_ewh_trend(trend_source)
+        if trend_final.empty:
+            st.info("No trend data available for current filter.")
+        else:
+            available_categories = sorted(trend_final["category"].unique().tolist())
+            preferred_order = ["OB Removal", "Coal Getting", "Coal Hauling"]
+            ordered_categories = [c for c in preferred_order if c in available_categories] + [c for c in available_categories if c not in preferred_order]
+
+            for i in range(0, len(ordered_categories), 2):
+                col_l, col_r = st.columns(2)
+                for idx, col in [(i, col_l), (i+1, col_r)]:
+                    if idx < len(ordered_categories):
+                        cat = ordered_categories[idx]
+                        df_cat = trend_final[trend_final["category"] == cat]
+                        with col:
+                            fig = build_trend_chart_ewh(df_cat, f"EWH - {cat}", trend_type)
+                            if fig: 
+                                st.plotly_chart(fig, use_container_width=True)
+                            else: 
+                                st.info(f"No data for {cat}")

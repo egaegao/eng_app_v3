@@ -53,10 +53,10 @@ def format_hover_number(val, metric_key):
 # 🔥 PATCH FIX — FUNCTION TABLE (DENGAN LIMIT 200 BARIS)
 def render_clean_table(df, height=400):
     """Tampilan Table dengan isolasi CSS agar tidak merusak modul lain"""
-    # Patch: Batasi data untuk performa rendering
-    df = df.head(200)
+    # Batasi data untuk performa rendering
+    df_view = df.head(200)
     
-    html_table = df.to_html(index=False, border=0, justify="center")
+    html_table = df_view.to_html(index=False, border=0, justify="center")
 
     styled = f"""
     <div id="production-table-container" style="overflow-x:auto; max-height:{height}px; overflow-y:auto; 
@@ -102,15 +102,17 @@ def render_clean_table(df, height=400):
 
 
 # =========================================================
-# 🏗️ CORE BUILDERS
+# 🏗️ CORE BUILDERS & CACHE AGGREGATION
 # =========================================================
 
+@st.cache_data(show_spinner=False)
 def build_performance_table(df):
+    """PATCH 4A: Cache Performance Table"""
     dates = sorted(df["date"].dropna().dt.normalize().unique().tolist())
     result_rows = []
 
     for metric_key in METRIC_ORDER:
-        df_metric = df[df["metric"] == metric_key].copy()
+        df_metric = df[df["metric"] == metric_key]
 
         if df_metric.empty:
             continue
@@ -155,30 +157,44 @@ def build_performance_table(df):
 
     return final_df, display_df
 
+
 @st.cache_data(show_spinner=False)
-def build_trend_chart(df_metric, metric_key, metric_label, trend_type):
-    """Trend Chart - Revisi applied for Axis readability"""
+def prepare_trend_data(df_metric, metric_key, trend_type):
+    """REVISED: Membatasi kolom sebelum aggregasi untuk efisiensi cache dan perbaikan bug kolom 'period'"""
+    # 🔒 pastikan hanya kolom penting (kurangi beban cache)
+    df_metric = df_metric[["date", "week_date", "plan", "actual"]].copy()
+
     if metric_key in ["overburden", "coal_getting", "coal_crushing"]:
         agg_func = "sum"
     else:
         agg_func = "mean"
 
     if trend_type == "Daily":
+        df_metric["period"] = df_metric["date"].dt.normalize()
         chart_df = (
-            df_metric.groupby(df_metric["date"].dt.normalize(), as_index=False)[["plan", "actual"]]
-            .sum()
-            .rename(columns={"date": "period"})
-        )
-        title = f"Trend Harian - {metric_label}"
-    else:
-        chart_df = (
-            df_metric.groupby(df_metric["week_date"].dt.normalize(), as_index=False)
+            df_metric.groupby("period", as_index=False)
             .agg({"plan": agg_func, "actual": agg_func})
-            .rename(columns={"week_date": "period"})
         )
-        title = f"Trend Mingguan - {metric_label}"
+    else:
+        df_metric["period"] = df_metric["week_date"].dt.normalize()
+        chart_df = (
+            df_metric.groupby("period", as_index=False)
+            .agg({"plan": agg_func, "actual": agg_func})
+        )
 
     chart_df = chart_df.sort_values("period")
+    return chart_df
+
+
+@st.cache_data(show_spinner=False)
+def build_trend_chart(df_metric, metric_key, metric_label, trend_type):
+    """Trend Chart - Rendering logic separated from aggregation"""
+    
+    # Memanggil data yang sudah di-cache agregasinya
+    chart_df = prepare_trend_data(df_metric, metric_key, trend_type)
+
+    if chart_df.empty:
+        return None
 
     chart_df["period_label"] = chart_df["period"].dt.strftime("%d-%b")
     chart_df["plan_hover"] = chart_df["plan"].apply(lambda x: format_hover_number(x, metric_key))
@@ -189,7 +205,7 @@ def build_trend_chart(df_metric, metric_key, metric_label, trend_type):
         x="period",
         y=["plan", "actual"],
         markers=True,
-        title=title,
+        title=f"Trend {trend_type} - {metric_label}",
         template="plotly_white"
     )
 
@@ -251,14 +267,25 @@ def build_trend_chart(df_metric, metric_key, metric_label, trend_type):
 
     return fig
 
+
 @st.cache_data(show_spinner=False)
-def build_bar_chart(df_metric, metric_key, metric_label):
+def prepare_bar_data(df_metric, metric_key):
+    """PATCH 4C: Cache Bar Chart Aggregation"""
     if metric_key in ["overburden", "coal_getting", "coal_crushing"]:
         plan_val = df_metric["plan"].sum()
         actual_val = df_metric["actual"].sum()
     else:
         plan_val = df_metric["plan"].mean()
         actual_val = df_metric["actual"].mean()
+
+    return plan_val, actual_val
+
+
+@st.cache_data(show_spinner=False)
+def build_bar_chart(df_metric, metric_key, metric_label):
+    """Bar Chart - Rendering logic"""
+    
+    plan_val, actual_val = prepare_bar_data(df_metric, metric_key)
 
     chart_df = pd.DataFrame({
         "Type": ["Plan", "Actual"],
@@ -402,7 +429,7 @@ def show_production_page(df, selected_block, selected_week):
         st.info("Silakan upload file terlebih dahulu.")
         return
 
-    full_df_filtered = df.copy()
+    full_df_filtered = df
     
     all_weeks_sorted = sorted(
         full_df_filtered["week_date"].dropna().dt.normalize().unique().tolist()
@@ -418,7 +445,7 @@ def show_production_page(df, selected_block, selected_week):
     
     current_week_df = full_df_filtered[
         full_df_filtered["week_date"].dt.normalize() == selected_week_ts
-    ].copy()
+    ]
 
     prev_week = None
     if selected_week_ts in all_weeks_sorted:
@@ -429,7 +456,7 @@ def show_production_page(df, selected_block, selected_week):
     if prev_week:
         prev_df = full_df_filtered[
             full_df_filtered["week_date"].dt.normalize() == prev_week
-        ].copy()
+        ]
     else:
         prev_df = pd.DataFrame()
 
@@ -462,31 +489,29 @@ def show_production_page(df, selected_block, selected_week):
     st.markdown(title_kpi)
 
     # ===============================
-    # 🔥 KPI DATA SOURCE (PATCH APPLIED)
+    # 🔥 KPI DATA SOURCE
     # ===============================
-    full_df_filtered["date"] = pd.to_datetime(
-        full_df_filtered["date"],
-        errors="coerce"
-    ).dt.normalize()
-
+    if not pd.api.types.is_datetime64_any_dtype(full_df_filtered["date"]):
+        full_df_filtered["date"] = pd.to_datetime(full_df_filtered["date"], errors="coerce")
+    
     kpi_end_date = selected_week_ts
 
     if kpi_mode == "Weekly":
-        kpi_df = current_week_df.copy()
+        kpi_df = current_week_df
 
     elif kpi_mode == "MTD":
         start_month = selected_week_ts.replace(day=1)
         kpi_df = full_df_filtered[
-            (full_df_filtered["date"] >= start_month) &
-            (full_df_filtered["date"] <= kpi_end_date)
-        ].copy()
+            (full_df_filtered["date"].dt.normalize() >= start_month) &
+            (full_df_filtered["date"].dt.normalize() <= kpi_end_date)
+        ]
 
     elif kpi_mode == "YTD":
         start_year = selected_week_ts.replace(month=1, day=1)
         kpi_df = full_df_filtered[
-            (full_df_filtered["date"] >= start_year) &
-            (full_df_filtered["date"] <= kpi_end_date)
-        ].copy()
+            (full_df_filtered["date"].dt.normalize() >= start_year) &
+            (full_df_filtered["date"].dt.normalize() <= kpi_end_date)
+        ]
 
     elif kpi_mode == "Custom" and custom_range:
         try:
@@ -495,24 +520,27 @@ def show_production_page(df, selected_block, selected_week):
             end = end.normalize()
 
             kpi_df = full_df_filtered[
-                (full_df_filtered["date"] >= start) &
-                (full_df_filtered["date"] <= end)
-            ].copy()
+                (full_df_filtered["date"].dt.normalize() >= start) &
+                (full_df_filtered["date"].dt.normalize() <= end)
+            ]
         except:
-            kpi_df = current_week_df.copy()
+            kpi_df = current_week_df
     else:
-        kpi_df = current_week_df.copy()
+        kpi_df = current_week_df
 
-    # Proteksi jika kpi_df kosong agar tidak error di fungsi calc_kpi
     if kpi_df.empty:
-        kpi_df = current_week_df.copy()
+        kpi_df = current_week_df
 
     st.caption(f"📍 Mode: {kpi_mode} | Row Count: {len(kpi_df)}")
 
     # --- 📊 KEY HIGHLIGHTS LOGIC ---
+    metric_cache = {
+        m: kpi_df[kpi_df["metric"] == m]
+        for m in kpi_df["metric"].unique()
+    }
 
     def calc_kpi(metric_key):
-        df_now = kpi_df[kpi_df["metric"] == metric_key]
+        df_now = metric_cache.get(metric_key, pd.DataFrame())
         df_prev = prev_df[prev_df["metric"] == metric_key] if not prev_df.empty else pd.DataFrame()
 
         if metric_key in ["stripping_ratio", "distance_ob", "distance_cg"]:
@@ -596,24 +624,25 @@ def show_production_page(df, selected_block, selected_week):
         col1, col2 = st.columns(2)
         for col, metric_key in zip([col1, col2], [left_key, right_key]):
             if trend_type == "Daily":
-                df_metric_trend = current_week_df[current_week_df["metric"] == metric_key].copy()
+                df_metric_trend = current_week_df[current_week_df["metric"] == metric_key]
             else:
                 df_metric_trend = full_df_filtered[
                     (full_df_filtered["metric"] == metric_key) & 
                     (full_df_filtered["week_date"].dt.normalize() >= start_w) & 
                     (full_df_filtered["week_date"].dt.normalize() <= end_w)
-                ].copy()
+                ]
 
             if not df_metric_trend.empty:
                 with col:
                     fig_trend = build_trend_chart(df_metric_trend, metric_key, METRIC_LABEL[metric_key], trend_type)
-                    st.plotly_chart(fig_trend, use_container_width=True)
+                    if fig_trend:
+                        st.plotly_chart(fig_trend, use_container_width=True)
 
     # --- 📊 PERFORMANCE SNAPSHOT ---
     st.markdown("## 📊 Performance Snapshot")
     cols_snap = st.columns(3)
     for i, metric_key in enumerate(METRIC_ORDER):
-        df_metric_bar = current_week_df[current_week_df["metric"] == metric_key].copy()
+        df_metric_bar = current_week_df[current_week_df["metric"] == metric_key]
         if not df_metric_bar.empty:
             with cols_snap[i % 3]:
                 fig_bar = build_bar_chart(df_metric_bar, metric_key, METRIC_LABEL[metric_key])

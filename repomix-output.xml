@@ -44,6 +44,7 @@ app.py
 README.md
 requirements.txt
 scripts/__init__.py
+scripts/auth.py
 scripts/charts.py
 scripts/config.py
 scripts/dashboard_pages/__init__.py
@@ -105,11 +106,21 @@ from scripts.dashboard_pages.action_page import show_action_page
 from scripts.dashboard_pages.findings_page import show_findings_page
 
 def format_week_option(x):
-    # Logika "All" tetap dipertahankan di fungsi format agar tidak error 
-    # jika sewaktu-waktu dipanggil, namun data yang masuk sudah difilter di selectbox.
+    # Logika "All" tetap dipertahankan agar tidak error 
     if x == "All":
         return "All"
     return pd.to_datetime(x).strftime("%d-%b-%Y")
+
+# Optimalisasi Global Filter (REVISI FINAL: SAFE VERSION)
+def apply_global_filter(df, block):
+    if df is None or df.empty:
+        return df
+    
+    # Menambahkan pengecekan keberadaan kolom 'block' untuk mencegah crash
+    if block is not None and "block" in df.columns:
+        return df[df["block"] == block]
+    
+    return df
 
 apply_app_style()
 
@@ -139,10 +150,18 @@ if "data_loaded" not in st.session_state:
 if "df_storage" not in st.session_state:
     st.session_state.df_storage = {}
 
+# Inisialisasi cache filter di session_state
+if "block_options" not in st.session_state:
+    st.session_state.block_options = []
+if "week_options" not in st.session_state:
+    st.session_state.week_options = []
+
 # Jika signature berbeda (user ganti/tambah/kurangi file), reset state
 if current_upload_signature != st.session_state.upload_signature:
     st.session_state.data_loaded = False
     st.session_state.df_storage = {}
+    st.session_state.block_options = []
+    st.session_state.week_options = []
     st.session_state.upload_signature = current_upload_signature
 
 # Inisialisasi variabel data agar tidak error saat dipanggil di filter
@@ -151,22 +170,21 @@ df_produksi = None
 df_hauling = None
 df_fleet = None
 df_unit = None
-df_productivity = None  # MODUL 6
-df_weather = None        # MODUL 7
-df_inventory = None     # MODUL 8
-df_fuel = None          # MODUL 9
-df_issue = None         # MODUL 10
-df_action = None        # MODUL 11
-df_finding = None       # MODUL 12
+df_productivity = None
+df_weather = None
+df_inventory = None
+df_fuel = None
+df_issue = None
+df_action = None
+df_finding = None
 
 # ===============================================
 # PROSES LOAD DATA
 # ===============================================
 if uploaded_files and not st.session_state.data_loaded:
     df_list = []
-    df_weather_list = [] # List khusus untuk menampung file weather
+    df_weather_list = [] 
 
-    # Loop upload dengan deteksi nama file (Isolation Strategy)
     for file in uploaded_files:
         if "weather" in file.name.lower():
             try:
@@ -181,16 +199,13 @@ if uploaded_files and not st.session_state.data_loaded:
             except Exception as e:
                 st.error(f"Gagal membaca file {file.name}: {e}")
 
-    # 1. BUILD WEATHER TERPISAH (ISOLATED)
+    # 1. BUILD WEATHER TERPISAH
     if df_weather_list:
         df_weather = pd.concat(df_weather_list, ignore_index=True, sort=False)
-        # Cleaning weather data
         if "metric" in df_weather.columns:
             df_weather["metric"] = df_weather["metric"].astype(str).str.strip().str.lower()
             df_weather = df_weather[df_weather["metric"].notna()]
             df_weather = df_weather[df_weather["metric"] != "nan"]
-            
-            # Pastikan tipe data numerik untuk kolom weather
             df_weather["actual"] = pd.to_numeric(df_weather["actual"], errors="coerce").fillna(0)
             df_weather["plan"] = pd.to_numeric(df_weather["plan"], errors="coerce").fillna(0)
     else:
@@ -199,14 +214,11 @@ if uploaded_files and not st.session_state.data_loaded:
     # 2. BUILD DATA MODUL LAINNYA
     if df_list:
         df_all = pd.concat(df_list, ignore_index=True, sort=False)
-
-        # Global Cleaning (Cegah data kotor di kolom utama)
         df_all = df_all.dropna(how="all")
         
         if "metric_group" in df_all.columns:
             df_all["metric_group"] = df_all["metric_group"].astype(str).str.strip().str.lower()
             
-            # Split data berdasarkan metric_group
             df_produksi = df_all[df_all["metric_group"] == "produksi"]
             df_hauling = df_all[df_all["metric_group"] == "hauling"]
             df_fleet = df_all[df_all["metric_group"] == "fleet"]
@@ -222,7 +234,33 @@ if uploaded_files and not st.session_state.data_loaded:
     else:
         df_all = None
 
-    # SIMPAN KE SESSION
+    # CACHE FILTER OPTIONS
+    combined_for_filter_list = []
+    if df_all is not None: combined_for_filter_list.append(df_all)
+    if df_weather is not None: combined_for_filter_list.append(df_weather)
+
+    if combined_for_filter_list:
+        df_filter_temp = pd.concat(combined_for_filter_list, ignore_index=True, sort=False)
+
+        # BLOCK OPTIONS
+        if "block" in df_filter_temp.columns:
+            st.session_state.block_options = sorted(
+                df_filter_temp["block"].dropna().astype(str).str.strip().unique().tolist()
+            )
+
+        # WEEK OPTIONS
+        if "week_date" in df_filter_temp.columns:
+            st.session_state.week_options = sorted(
+                pd.to_datetime(df_filter_temp["week_date"], errors="coerce")
+                .dropna()
+                .dt.normalize()
+                .unique()
+                .tolist()
+            )
+    else:
+        st.session_state.block_options = []
+        st.session_state.week_options = []
+
     st.session_state.df_storage = {
         "df_all": df_all,
         "df_produksi": df_produksi,
@@ -258,6 +296,8 @@ if st.session_state.data_loaded:
 if not uploaded_files and st.session_state.data_loaded:
     st.session_state.data_loaded = False
     st.session_state.df_storage = {}
+    st.session_state.block_options = []
+    st.session_state.week_options = []
     st.session_state.upload_signature = None
     st.rerun()
 
@@ -267,43 +307,29 @@ if not uploaded_files and st.session_state.data_loaded:
 col1, col2, col3 = st.columns(3)
 
 with col1:
-    combined_for_filter = []
-    if df_all is not None: combined_for_filter.append(df_all)
-    if df_weather is not None: combined_for_filter.append(df_weather)
-    
-    if combined_for_filter:
-        df_filter = pd.concat(combined_for_filter, ignore_index=True, sort=False)
-        block_options = sorted(
-            df_filter["block"].dropna().astype(str).str.strip().unique().tolist()
+    block_options = st.session_state.get("block_options", [])
+    # REVISI FINAL: Kondisi eksplisit untuk selectbox block
+    if block_options:
+        selected_block = st.selectbox(
+            "Pilih Block",
+            options=block_options,
+            index=0
         )
     else:
-        block_options = []
-
-    selected_block = st.selectbox(
-        "Pilih Block",
-        options=block_options,
-        index=0 if block_options else None
-    )
+        selected_block = None
 
 with col2:
-    if 'df_filter' in locals() and not df_filter.empty:
-        week_values = sorted(
-            pd.to_datetime(df_filter["week_date"], errors="coerce")
-            .dropna()
-            .dt.normalize()
-            .unique()
-            .tolist()
+    week_options = st.session_state.get("week_options", [])
+    # REVISI FINAL: Kondisi eksplisit untuk selectbox week
+    if week_options:
+        selected_week = st.selectbox(
+            "Pilih Week",
+            options=week_options,
+            index=0,
+            format_func=format_week_option
         )
-        week_options = week_values
     else:
-        week_options = []
-
-    selected_week = st.selectbox(
-        "Pilih Week",
-        options=week_options,
-        index=0 if week_options else None,
-        format_func=format_week_option
-    )
+        selected_week = None
 
 with col3:
     category_all_data = []
@@ -323,37 +349,10 @@ with col3:
         index=0
     )
 
-# =========================
-# GLOBAL DATA FILTER (REVISED)
-# =========================
-def apply_global_filter(df, block):
-    if df is None or df.empty:
-        return df
-    
-    df_filtered = df.copy()
-    
-    if block:
-        df_filtered = df_filtered[df_filtered["block"] == block]
-    
-    return df_filtered
-
-# APPLY GLOBAL FILTER KE SEMUA DATA (HANYA BLOCK)
-df_produksi_f = apply_global_filter(df_produksi, selected_block)
-df_hauling_f = apply_global_filter(df_hauling, selected_block)
-df_fleet_f = apply_global_filter(df_fleet, selected_block)
-df_unit_f = apply_global_filter(df_unit, selected_block)
-df_productivity_f = apply_global_filter(df_productivity, selected_block)
-df_weather_f = apply_global_filter(df_weather, selected_block)
-df_inventory_f = apply_global_filter(df_inventory, selected_block)
-df_fuel_f = apply_global_filter(df_fuel, selected_block)
-df_issue_f = apply_global_filter(df_issue, selected_block)
-df_action_f = apply_global_filter(df_action, selected_block)
-df_finding_f = apply_global_filter(df_finding, selected_block)
-
 st.markdown('</div>', unsafe_allow_html=True)
 
 # ===============================================
-# PATCH 3: UPDATE NAVIGASI MENU (PENGGANTI TABS)
+# NAVIGASI MENU (RADIO BUTTON)
 # ===============================================
 selected_page = st.radio(
     "Pilih Modul Dashboard",
@@ -376,86 +375,96 @@ selected_page = st.radio(
 
 st.divider()
 
-# RENDER HALAMAN AKTIF SECARA KONDISIONAL
+# ==================================================================
+# RENDER HALAMAN AKTIF - LAZY FILTERING
+# ==================================================================
 try:
     if selected_page == "📊 Produksi":
-        if df_produksi_f is None or df_produksi_f.empty:
+        if df_produksi is None or df_produksi.empty:
             st.info("Data produksi belum diupload")
         else:
+            df_produksi_f = apply_global_filter(df_produksi, selected_block)
             show_production_page(df_produksi_f, selected_block, selected_week)
 
     elif selected_page == "🚛 Hauling":
-        if df_hauling_f is None or df_hauling_f.empty:
+        if df_hauling is None or df_hauling.empty:
             st.info("Data hauling belum diupload")
         else:
+            df_hauling_f = apply_global_filter(df_hauling, selected_block)
             show_hauling_page(df_hauling_f, selected_block, selected_week)
 
     elif selected_page == "🚜 Fleet":
-        if df_fleet_f is None or df_fleet_f.empty:
+        if df_fleet is None or df_fleet.empty:
             st.info("Data fleet belum diupload")
         else:
+            df_fleet_f = apply_global_filter(df_fleet, selected_block)
             show_fleet_page(df_fleet_f, selected_block, selected_week)
 
     elif selected_page == "🚜 Unjuk Kerja":
-        if df_unit_f is None or df_unit_f.empty:
+        if df_unit is None or df_unit.empty:
             st.info("Data unit belum diupload")
         else:
+            df_unit_f = apply_global_filter(df_unit, selected_block)
             show_unjuk_kerja_page(df_unit_f, selected_block, selected_week, selected_category_global)
 
     elif selected_page == "⏱️ EWH":
-        if df_unit_f is None or df_unit_f.empty:
+        if df_unit is None or df_unit.empty:
             st.info("Data EWH belum diupload")
         else:
+            df_unit_f = apply_global_filter(df_unit, selected_block)
             show_ewh_page(df_unit_f, selected_block, selected_week, selected_category_global)
 
     elif selected_page == "⚡ Productivity":
-        if df_productivity_f is None or df_productivity_f.empty:
+        if df_productivity is None or df_productivity.empty:
             st.info("Data productivity belum diupload")
         else:
+            df_productivity_f = apply_global_filter(df_productivity, selected_block)
             show_productivity_page(df_productivity_f, selected_block, selected_week, selected_category_global)
 
     elif selected_page == "🌧️ Weather":
-        if df_weather_f is None or df_weather_f.empty:
+        if df_weather is None or df_weather.empty:
             st.info("Data weather belum diupload (Pastikan nama file mengandung kata 'weather')")
         else:
+            df_weather_f = apply_global_filter(df_weather, selected_block)
             show_weather_page(df_weather_f, selected_block, selected_week)
 
     elif selected_page == "📦 Inventory":
-        if df_inventory_f is None or df_inventory_f.empty:
+        if df_inventory is None or df_inventory.empty:
             st.info("Data inventory belum diupload")
         else:
+            df_inventory_f = apply_global_filter(df_inventory, selected_block)
             show_inventory_page(df_inventory_f, selected_block, selected_week)
 
     elif selected_page == "⛽ Fuel":
-        if df_fuel_f is None or df_fuel_f.empty:
+        if df_fuel is None or df_fuel.empty:
             st.info("Data fuel belum diupload")
         else:
+            df_fuel_f = apply_global_filter(df_fuel, selected_block)
             show_fuel_page(df_fuel_f, selected_block, selected_week)
 
     elif selected_page == "⚠️ Issue":
-        if df_issue_f is None or df_issue_f.empty:
+        if df_issue is None or df_issue.empty:
             st.info("Data issue belum diupload")
         else:
+            df_issue_f = apply_global_filter(df_issue, selected_block)
             show_issue_page(df_issue_f, selected_block, selected_week)
 
     elif selected_page == "🛠️ Action":
-        if df_action_f is None or df_action_f.empty:
+        if df_action is None or df_action.empty:
             st.info("Data action belum diupload")
         else:
+            df_action_f = apply_global_filter(df_action, selected_block)
             show_action_page(df_action_f, selected_block, selected_week)
 
     elif selected_page == "📋 Findings":
-        if df_finding_f is None or df_finding_f.empty:
+        if df_finding is None or df_finding.empty:
             st.info("Data findings belum diupload")
         else:
+            df_finding_f = apply_global_filter(df_finding, selected_block)
             show_findings_page(df_finding_f, selected_block, selected_week)
 
 except Exception as e:
     st.error(f"Terjadi kesalahan saat memuat modul {selected_page}: {e}")
-</file>
-
-<file path="README.md">
-
 </file>
 
 <file path="requirements.txt">
@@ -469,6 +478,90 @@ xlsxwriter
 
 <file path="scripts/__init__.py">
 
+</file>
+
+<file path="scripts/auth.py">
+import streamlit as st
+
+def login_screen():
+    st.markdown("""
+    <style>
+    header {visibility: hidden;}
+    #MainMenu {visibility: hidden;}
+    footer {visibility: hidden;}
+
+    .main-title {
+        font-size: 2.5rem;
+        font-weight: 800;
+        text-align: center;
+        margin-top: 40px;
+        margin-bottom: 20px;
+        color: #0f172a;
+    }
+
+    .quote-text {
+        text-align: center;
+        max-width: 600px;
+        margin: 0 auto 10px auto;
+        color: #334155;
+        font-size: 1rem;
+        font-style: italic;
+    }
+
+    .author-text {
+        text-align: center;
+        font-size: 0.75rem;
+        margin-bottom: 40px;
+        color: #64748b;
+        font-weight: 700;
+        letter-spacing: 0.15em;
+    }
+
+    div.stButton > button {
+        background-color: #2563eb !important;
+        color: white !important;
+        height: 42px !important;
+        font-weight: 600 !important;
+        border-radius: 6px !important;
+        width: 100%;
+    }
+    </style>
+    """, unsafe_allow_html=True)
+
+    if 'authenticated' not in st.session_state:
+        st.session_state['authenticated'] = False
+
+    if not st.session_state['authenticated']:
+        st.markdown("<style>section[data-testid='stSidebar'] {display: none;}</style>", unsafe_allow_html=True)
+
+        st.markdown('<h1 class="main-title">OPSAPP</h1>', unsafe_allow_html=True)
+
+        st.markdown("""
+        <div class="quote-text">
+        "Disiplin kecil setiap hari akan menghasilkan hasil besar di masa depan."
+        </div>
+        """, unsafe_allow_html=True)
+
+        st.markdown('<div class="author-text">Mining Operation System</div>', unsafe_allow_html=True)
+
+        _, col, _ = st.columns([1.5,1,1.5])
+
+        with col:
+            password = st.text_input(
+                "Access Code",
+                type="password",
+                placeholder="••••••",
+                label_visibility="collapsed"
+            )
+
+            if st.button("Login"):
+                if password == "pms":
+                    st.session_state['authenticated'] = True
+                    st.rerun()
+                else:
+                    st.error("Access ditolak")
+
+        st.stop()
 </file>
 
 <file path="scripts/charts.py">
@@ -1999,20 +2092,23 @@ def render_fleet_kpi(title, value, wow=None, plan=None):
 # =========================================================
 @st.cache_data(show_spinner=False)
 def build_trend_chart_fleet(df_metric, metric_key, metric_label, trend_type):
+    df_metric = df_metric.copy()
+
     if trend_type == "Daily":
+        df_metric["period"] = df_metric["date"].dt.normalize()
         chart_df = (
-            df_metric.groupby(df_metric["date"].dt.normalize(), as_index=False)[["plan", "actual"]]
+            df_metric.groupby("period", as_index=False)[["plan", "actual"]]
             .mean()
-            .rename(columns={"date": "period"})
         )
     else:
+        df_metric["period"] = df_metric["week_date"].dt.normalize()
         chart_df = (
-            df_metric.groupby("week_date", as_index=False)[["plan", "actual"]]
+            df_metric.groupby("period", as_index=False)[["plan", "actual"]]
             .mean()
-            .rename(columns={"week_date": "period"})
         )
 
     chart_df = chart_df.sort_values("period")
+
     if chart_df.empty:
         return None
 
@@ -2065,17 +2161,18 @@ def build_trend_chart_fleet(df_metric, metric_key, metric_label, trend_type):
     fig.update_xaxes(
         tickmode="array",
         tickvals=chart_df["period"],
-        ticktext=chart_df["period"].dt.strftime("%d-%b"),
+        ticktext=chart_df["period_label"],
         tickangle=0,
         showgrid=False,
         tickfont=dict(size=15, color="#000000")
     )
 
     fig.update_yaxes(
-        showgrid=True, 
-        gridcolor="#e5e7eb", 
+        showgrid=True,
+        gridcolor="#e5e7eb",
         tickfont=dict(size=15, color="#000000")
     )
+
     return fig
 
 
@@ -2154,14 +2251,23 @@ def show_fleet_page(df, selected_block, selected_week):
         df["plan"] = pd.to_numeric(df["plan"], errors="coerce")
         df["actual"] = pd.to_numeric(df["actual"], errors="coerce")
 
-        df_kpi_val = df[df["metric"].notna() & (df["metric"].astype(str).str.strip() != "")]
+        # FILTER DIUBAH DI SINI: Menyaring baris non-kosong dan mengecualikan string "nan" palsu
+        df_kpi_val = df[
+            df["metric"].notna() &
+            (df["metric"].astype(str).str.strip() != "") &
+            (df["metric"].astype(str).str.lower().str.strip() != "nan")
+        ]
         if not df_kpi_val.empty:
             if df_kpi_val["plan"].isna().any() or df_kpi_val["actual"].isna().any():
                 st.error("Ditemukan nilai 'plan' atau 'actual' yang bukan angka pada data Fleet KPI.")
                 return
 
-    # Split Data
-    df_kpi = df[df["metric"].notna() & (df["metric"].astype(str).str.strip() != "")].copy()
+    # Split Data - FILTER DIUBAH DI SINI JUGA: Mengecualikan string "nan" palsu
+    df_kpi = df[
+        df["metric"].notna() &
+        (df["metric"].astype(str).str.strip() != "") &
+        (df["metric"].astype(str).str.lower().str.strip() != "nan")
+    ].copy()
     df_detail = df[df["loader_id"].notna() & (df["loader_id"].astype(str).str.strip() != "")]
 
     if not df_kpi.empty:
@@ -2242,7 +2348,6 @@ def show_fleet_page(df, selected_block, selected_week):
         def calc_kpi_metric(metric_name):
             df_now = kpi_df[kpi_df["metric"] == metric_name]
             
-            # Fix variable scope bug: Define df_p clearly
             df_p = pd.DataFrame()
             if not df_prev.empty:
                 df_p = df_prev[df_prev["metric"] == metric_name]
@@ -2794,29 +2899,31 @@ def build_trend_chart(df_source, metric, trend_option, current_week, selected_ra
     if df_metric.empty:
         return None
 
+    # --- IMPLEMENTASI PATCH FINAL (ANTI RENAME RISK) ---
     if trend_option == "Daily":
         chart_data = df_metric[df_metric["week_date"] == current_week].copy()
+
         if chart_data.empty:
             return None
 
+        chart_data["period"] = chart_data["date"].dt.normalize()
+
         if agg == "sum":
             chart_df = (
-                chart_data.groupby(chart_data["date"].dt.normalize())
+                chart_data.groupby("period", as_index=False)
                 .agg({"actual": "sum", "plan": "sum"})
-                .reset_index()
-                .rename(columns={"date": "period"})
             )
         else:
             chart_df = (
-                chart_data.groupby(chart_data["date"].dt.normalize())
+                chart_data.groupby("period", as_index=False)
                 .agg({"actual": "mean", "plan": "mean"})
-                .reset_index()
-                .rename(columns={"date": "period"})
             )
+
     else:
         if selected_range:
             start_r = pd.to_datetime(selected_range["start"]).normalize()
             end_r = pd.to_datetime(selected_range["end"]).normalize()
+
             chart_data = df_metric[
                 (df_metric["week_date"] >= start_r)
                 & (df_metric["week_date"] <= end_r)
@@ -2827,20 +2934,19 @@ def build_trend_chart(df_source, metric, trend_option, current_week, selected_ra
         if chart_data.empty:
             return None
 
+        chart_data["period"] = chart_data["week_date"].dt.normalize()
+
         if agg == "sum":
             chart_df = (
-                chart_data.groupby("week_date")
+                chart_data.groupby("period", as_index=False)
                 .agg({"actual": "sum", "plan": "sum"})
-                .reset_index()
-                .rename(columns={"week_date": "period"})
             )
         else:
             chart_df = (
-                chart_data.groupby("week_date")
+                chart_data.groupby("period", as_index=False)
                 .agg({"actual": "mean", "plan": "mean"})
-                .reset_index()
-                .rename(columns={"week_date": "period"})
             )
+    # --- END OF PATCH ---
 
     chart_df = chart_df.sort_values("period")
     chart_df["label"] = chart_df["period"].dt.strftime("%d-%b")
@@ -3544,19 +3650,24 @@ def build_trend_chart_hauling(df_metric, metric_key, metric_label, trend_type):
     else:
         agg_func = "mean"
 
+    # --- REVISI BAGIAN AWAL LOGIKA PERIOD & GROUPBY ---
     if trend_type == "Daily":
+        df_metric = df_metric.dropna(subset=["date"]).copy()
+        df_metric["period"] = df_metric["date"].dt.normalize()
+
         chart_df = (
-            df_metric.groupby(df_metric["date"].dt.normalize(), as_index=False)[["plan", "actual"]]
-            .sum()
-            .rename(columns={"date": "period"})
+            df_metric.groupby("period", as_index=False)
+            .agg({"plan": agg_func, "actual": agg_func})
         )
     else:
         df_metric = df_metric.dropna(subset=["week_date"]).copy()
+        df_metric["period"] = df_metric["week_date"].dt.normalize()
+
         chart_df = (
-            df_metric.groupby("week_date", as_index=False)
+            df_metric.groupby("period", as_index=False)
             .agg({"plan": agg_func, "actual": agg_func})
-            .rename(columns={"week_date": "period"})
         )
+    # --------------------------------------------------
 
     chart_df = chart_df.sort_values("period")
     if chart_df.empty:
@@ -5042,10 +5153,10 @@ def format_hover_number(val, metric_key):
 # 🔥 PATCH FIX — FUNCTION TABLE (DENGAN LIMIT 200 BARIS)
 def render_clean_table(df, height=400):
     """Tampilan Table dengan isolasi CSS agar tidak merusak modul lain"""
-    # Patch: Batasi data untuk performa rendering
-    df = df.head(200)
+    # Batasi data untuk performa rendering
+    df_view = df.head(200)
     
-    html_table = df.to_html(index=False, border=0, justify="center")
+    html_table = df_view.to_html(index=False, border=0, justify="center")
 
     styled = f"""
     <div id="production-table-container" style="overflow-x:auto; max-height:{height}px; overflow-y:auto; 
@@ -5091,15 +5202,17 @@ def render_clean_table(df, height=400):
 
 
 # =========================================================
-# 🏗️ CORE BUILDERS
+# 🏗️ CORE BUILDERS & CACHE AGGREGATION
 # =========================================================
 
+@st.cache_data(show_spinner=False)
 def build_performance_table(df):
+    """PATCH 4A: Cache Performance Table"""
     dates = sorted(df["date"].dropna().dt.normalize().unique().tolist())
     result_rows = []
 
     for metric_key in METRIC_ORDER:
-        df_metric = df[df["metric"] == metric_key].copy()
+        df_metric = df[df["metric"] == metric_key]
 
         if df_metric.empty:
             continue
@@ -5144,30 +5257,44 @@ def build_performance_table(df):
 
     return final_df, display_df
 
+
 @st.cache_data(show_spinner=False)
-def build_trend_chart(df_metric, metric_key, metric_label, trend_type):
-    """Trend Chart - Revisi applied for Axis readability"""
+def prepare_trend_data(df_metric, metric_key, trend_type):
+    """REVISED: Membatasi kolom sebelum aggregasi untuk efisiensi cache dan perbaikan bug kolom 'period'"""
+    # 🔒 pastikan hanya kolom penting (kurangi beban cache)
+    df_metric = df_metric[["date", "week_date", "plan", "actual"]].copy()
+
     if metric_key in ["overburden", "coal_getting", "coal_crushing"]:
         agg_func = "sum"
     else:
         agg_func = "mean"
 
     if trend_type == "Daily":
+        df_metric["period"] = df_metric["date"].dt.normalize()
         chart_df = (
-            df_metric.groupby(df_metric["date"].dt.normalize(), as_index=False)[["plan", "actual"]]
-            .sum()
-            .rename(columns={"date": "period"})
-        )
-        title = f"Trend Harian - {metric_label}"
-    else:
-        chart_df = (
-            df_metric.groupby(df_metric["week_date"].dt.normalize(), as_index=False)
+            df_metric.groupby("period", as_index=False)
             .agg({"plan": agg_func, "actual": agg_func})
-            .rename(columns={"week_date": "period"})
         )
-        title = f"Trend Mingguan - {metric_label}"
+    else:
+        df_metric["period"] = df_metric["week_date"].dt.normalize()
+        chart_df = (
+            df_metric.groupby("period", as_index=False)
+            .agg({"plan": agg_func, "actual": agg_func})
+        )
 
     chart_df = chart_df.sort_values("period")
+    return chart_df
+
+
+@st.cache_data(show_spinner=False)
+def build_trend_chart(df_metric, metric_key, metric_label, trend_type):
+    """Trend Chart - Rendering logic separated from aggregation"""
+    
+    # Memanggil data yang sudah di-cache agregasinya
+    chart_df = prepare_trend_data(df_metric, metric_key, trend_type)
+
+    if chart_df.empty:
+        return None
 
     chart_df["period_label"] = chart_df["period"].dt.strftime("%d-%b")
     chart_df["plan_hover"] = chart_df["plan"].apply(lambda x: format_hover_number(x, metric_key))
@@ -5178,7 +5305,7 @@ def build_trend_chart(df_metric, metric_key, metric_label, trend_type):
         x="period",
         y=["plan", "actual"],
         markers=True,
-        title=title,
+        title=f"Trend {trend_type} - {metric_label}",
         template="plotly_white"
     )
 
@@ -5240,14 +5367,25 @@ def build_trend_chart(df_metric, metric_key, metric_label, trend_type):
 
     return fig
 
+
 @st.cache_data(show_spinner=False)
-def build_bar_chart(df_metric, metric_key, metric_label):
+def prepare_bar_data(df_metric, metric_key):
+    """PATCH 4C: Cache Bar Chart Aggregation"""
     if metric_key in ["overburden", "coal_getting", "coal_crushing"]:
         plan_val = df_metric["plan"].sum()
         actual_val = df_metric["actual"].sum()
     else:
         plan_val = df_metric["plan"].mean()
         actual_val = df_metric["actual"].mean()
+
+    return plan_val, actual_val
+
+
+@st.cache_data(show_spinner=False)
+def build_bar_chart(df_metric, metric_key, metric_label):
+    """Bar Chart - Rendering logic"""
+    
+    plan_val, actual_val = prepare_bar_data(df_metric, metric_key)
 
     chart_df = pd.DataFrame({
         "Type": ["Plan", "Actual"],
@@ -5391,7 +5529,7 @@ def show_production_page(df, selected_block, selected_week):
         st.info("Silakan upload file terlebih dahulu.")
         return
 
-    full_df_filtered = df.copy()
+    full_df_filtered = df
     
     all_weeks_sorted = sorted(
         full_df_filtered["week_date"].dropna().dt.normalize().unique().tolist()
@@ -5407,7 +5545,7 @@ def show_production_page(df, selected_block, selected_week):
     
     current_week_df = full_df_filtered[
         full_df_filtered["week_date"].dt.normalize() == selected_week_ts
-    ].copy()
+    ]
 
     prev_week = None
     if selected_week_ts in all_weeks_sorted:
@@ -5418,7 +5556,7 @@ def show_production_page(df, selected_block, selected_week):
     if prev_week:
         prev_df = full_df_filtered[
             full_df_filtered["week_date"].dt.normalize() == prev_week
-        ].copy()
+        ]
     else:
         prev_df = pd.DataFrame()
 
@@ -5451,31 +5589,29 @@ def show_production_page(df, selected_block, selected_week):
     st.markdown(title_kpi)
 
     # ===============================
-    # 🔥 KPI DATA SOURCE (PATCH APPLIED)
+    # 🔥 KPI DATA SOURCE
     # ===============================
-    full_df_filtered["date"] = pd.to_datetime(
-        full_df_filtered["date"],
-        errors="coerce"
-    ).dt.normalize()
-
+    if not pd.api.types.is_datetime64_any_dtype(full_df_filtered["date"]):
+        full_df_filtered["date"] = pd.to_datetime(full_df_filtered["date"], errors="coerce")
+    
     kpi_end_date = selected_week_ts
 
     if kpi_mode == "Weekly":
-        kpi_df = current_week_df.copy()
+        kpi_df = current_week_df
 
     elif kpi_mode == "MTD":
         start_month = selected_week_ts.replace(day=1)
         kpi_df = full_df_filtered[
-            (full_df_filtered["date"] >= start_month) &
-            (full_df_filtered["date"] <= kpi_end_date)
-        ].copy()
+            (full_df_filtered["date"].dt.normalize() >= start_month) &
+            (full_df_filtered["date"].dt.normalize() <= kpi_end_date)
+        ]
 
     elif kpi_mode == "YTD":
         start_year = selected_week_ts.replace(month=1, day=1)
         kpi_df = full_df_filtered[
-            (full_df_filtered["date"] >= start_year) &
-            (full_df_filtered["date"] <= kpi_end_date)
-        ].copy()
+            (full_df_filtered["date"].dt.normalize() >= start_year) &
+            (full_df_filtered["date"].dt.normalize() <= kpi_end_date)
+        ]
 
     elif kpi_mode == "Custom" and custom_range:
         try:
@@ -5484,24 +5620,27 @@ def show_production_page(df, selected_block, selected_week):
             end = end.normalize()
 
             kpi_df = full_df_filtered[
-                (full_df_filtered["date"] >= start) &
-                (full_df_filtered["date"] <= end)
-            ].copy()
+                (full_df_filtered["date"].dt.normalize() >= start) &
+                (full_df_filtered["date"].dt.normalize() <= end)
+            ]
         except:
-            kpi_df = current_week_df.copy()
+            kpi_df = current_week_df
     else:
-        kpi_df = current_week_df.copy()
+        kpi_df = current_week_df
 
-    # Proteksi jika kpi_df kosong agar tidak error di fungsi calc_kpi
     if kpi_df.empty:
-        kpi_df = current_week_df.copy()
+        kpi_df = current_week_df
 
     st.caption(f"📍 Mode: {kpi_mode} | Row Count: {len(kpi_df)}")
 
     # --- 📊 KEY HIGHLIGHTS LOGIC ---
+    metric_cache = {
+        m: kpi_df[kpi_df["metric"] == m]
+        for m in kpi_df["metric"].unique()
+    }
 
     def calc_kpi(metric_key):
-        df_now = kpi_df[kpi_df["metric"] == metric_key]
+        df_now = metric_cache.get(metric_key, pd.DataFrame())
         df_prev = prev_df[prev_df["metric"] == metric_key] if not prev_df.empty else pd.DataFrame()
 
         if metric_key in ["stripping_ratio", "distance_ob", "distance_cg"]:
@@ -5585,24 +5724,25 @@ def show_production_page(df, selected_block, selected_week):
         col1, col2 = st.columns(2)
         for col, metric_key in zip([col1, col2], [left_key, right_key]):
             if trend_type == "Daily":
-                df_metric_trend = current_week_df[current_week_df["metric"] == metric_key].copy()
+                df_metric_trend = current_week_df[current_week_df["metric"] == metric_key]
             else:
                 df_metric_trend = full_df_filtered[
                     (full_df_filtered["metric"] == metric_key) & 
                     (full_df_filtered["week_date"].dt.normalize() >= start_w) & 
                     (full_df_filtered["week_date"].dt.normalize() <= end_w)
-                ].copy()
+                ]
 
             if not df_metric_trend.empty:
                 with col:
                     fig_trend = build_trend_chart(df_metric_trend, metric_key, METRIC_LABEL[metric_key], trend_type)
-                    st.plotly_chart(fig_trend, use_container_width=True)
+                    if fig_trend:
+                        st.plotly_chart(fig_trend, use_container_width=True)
 
     # --- 📊 PERFORMANCE SNAPSHOT ---
     st.markdown("## 📊 Performance Snapshot")
     cols_snap = st.columns(3)
     for i, metric_key in enumerate(METRIC_ORDER):
-        df_metric_bar = current_week_df[current_week_df["metric"] == metric_key].copy()
+        df_metric_bar = current_week_df[current_week_df["metric"] == metric_key]
         if not df_metric_bar.empty:
             with cols_snap[i % 3]:
                 fig_bar = build_bar_chart(df_metric_bar, metric_key, METRIC_LABEL[metric_key])
@@ -5616,16 +5756,21 @@ import plotly.express as px
 import streamlit.components.v1 as components
 
 # ==========================================
+# GLOBAL CONFIGURATIONS & CONSTANTS
+# ==========================================
+FONT_FAMILY = "Segoe UI, Arial, sans-serif"
+
+# ==========================================
 # CACHED CHART BUILDERS (OPTIMIZATION)
 # ==========================================
 
 @st.cache_data(show_spinner=False)
-def build_fig_cat_cached(df_melt):
+def build_fig_cat_cached(df_melt, x_col):
     fig = px.bar(
         df_melt,
-        x="category",
+        x=x_col,
         y="value",
-        color="type",
+        color="series",
         barmode="group",
         text=df_melt["value"].round(1),
         template="plotly_white",
@@ -5722,6 +5867,58 @@ def build_snapshot_prod_cached(chart_df, title):
         font=dict(family="Inter")
     )
     return fig
+
+# ==========================================
+# REVISED FORMATTING FUNCTIONS
+# ==========================================
+
+def fmt_num(x, unit=None):
+    if pd.isna(x):
+        return "-"
+    value = f"{x:.1f}"
+    return f"{value} {unit}" if unit else value
+
+def fmt_variance(x, unit=None):
+    if pd.isna(x):
+        return "-"
+    color = "#047857" if x >= 0 else "#dc2626"
+    sign = "+" if x >= 0 else ""
+    value = f"{sign}{x:.1f}"
+    if unit:
+        value = f"{value} {unit}"
+    return f"<span style='color:{color};'>{value}</span>"
+
+def fmt_achievement(x):
+    if pd.isna(x):
+        return "-"
+    color = "#047857" if x >= 100 else "#dc2626"
+    return f"<span style='color:{color};'>{x:.1f}%</span>"
+
+def get_unit_label(df_source):
+    if "unit" not in df_source.columns:
+        return ""
+
+    units = (
+        df_source["unit"]
+        .dropna()
+        .astype(str)
+        .str.strip()
+    )
+
+    units = units[
+        (units != "") &
+        (units.str.lower() != "nan")
+    ]
+
+    unique_units = sorted(units.unique().tolist())
+
+    if len(unique_units) == 1:
+        return unique_units[0]
+
+    if len(unique_units) > 1:
+        return "mixed unit"
+
+    return ""
 
 # ==========================================
 # HELPER FUNCTIONS
@@ -5904,32 +6101,121 @@ def show_productivity_page(df, selected_block, selected_week, selected_category)
     st.divider()
 
     # ======================================
-    # 📊 BAR CHART (PLAN VS ACTUAL)
+    # 📊 BAR CHART BY TYPE
     # ======================================
-    st.subheader("📊 Plan vs Actual per Category (Weekly)")
+    st.subheader(
+        "📊 Plan vs Actual per Type (All Category)"
+        if selected_category == "All"
+        else f"📊 Plan vs Actual per Type - {selected_category} (Weekly)"
+    )
 
-    df_chart = df_view.groupby("category")[["plan", "actual"]].mean().reset_index()
-    df_melt = df_chart.melt(id_vars="category", var_name="type", value_name="value")
+    df_chart = (
+        df_view.groupby("type")[["plan", "actual"]]
+        .mean()
+        .reset_index()
+        .sort_values("actual", ascending=False)
+    )
 
-    fig_cat = build_fig_cat_cached(df_melt)
+    df_melt = df_chart.melt(
+        id_vars="type",
+        value_vars=["plan", "actual"],
+        var_name="series",
+        value_name="value"
+    )
+
+    fig_cat = build_fig_cat_cached(df_melt, "type")
     st.plotly_chart(fig_cat, use_container_width=True)
     st.divider()
 
     # ======================================
-    # 📦 DETAIL DATA
+    # 📦 WEEKLY SUMMARY - PROFESSIONAL
     # ======================================
-    st.subheader("📦 Detail Data (Weekly)")
-    st.caption("Data performansi unit per hari.")
+    st.subheader("📦 Weekly Summary")
+    st.caption("Ringkasan performa unit mingguan yang lebih rapi, compact, dan mudah dibaca.")
 
-    cols_show = ["date", "week_date", "block", "category", "type", "unit_type", "no_lambung", "plan", "actual"]
-    cols_to_display = [c for c in cols_show if c in df_view.columns]
-    
-    df_clean = df_view[cols_to_display].sort_values(["category", "actual"], ascending=[True, False])
+    summary_df = df_view.copy()
 
-    if "plan" in df_clean.columns: df_clean["plan"] = df_clean["plan"].round(1)
-    if "actual" in df_clean.columns: df_clean["actual"] = df_clean["actual"].round(1)
+    weekly_summary = (
+        summary_df.groupby(["category", "type", "unit_type", "no_lambung"], as_index=False)
+        .agg(
+            plan=("plan", "mean"), 
+            actual=("actual", "mean"),
+            unit=("unit", lambda x: get_unit_label(pd.DataFrame({"unit": x})))
+        )
+    )
 
-    render_clean_table(df_clean, height=400)
+    weekly_summary["variance"] = weekly_summary["actual"] - weekly_summary["plan"]
+    weekly_summary["achievement_pct"] = (
+        weekly_summary["actual"] / weekly_summary["plan"].replace(0, pd.NA) * 100
+    )
+
+    weekly_summary = weekly_summary.sort_values(
+        ["category", "type", "achievement_pct"],
+        ascending=[True, True, False]
+    )
+
+    # --- REVISED DISPLAY SUMMARY COLUMNS WITH UOM ---
+    display_summary = pd.DataFrame({
+        "Category": weekly_summary["category"].astype(str),
+        "Type": weekly_summary["type"].astype(str),
+        "Unit Type": weekly_summary["unit_type"].astype(str),
+        "Unit": weekly_summary["no_lambung"].astype(str),
+        "UoM": weekly_summary["unit"].astype(str),
+        "Plan": weekly_summary["plan"].apply(fmt_num),
+        "Actual": weekly_summary["actual"].apply(fmt_num),
+        "Variance": weekly_summary["variance"].apply(fmt_variance),
+        "Achievement": weekly_summary["achievement_pct"].apply(fmt_achievement),
+    }).head(200)
+
+    html_table = display_summary.to_html(index=False, escape=False, border=0)
+
+    # --- REVISED CSS (WEEKLY SUMMARY) ---
+    components.html(f"""
+    <div style="
+        overflow:auto;
+        max-height:480px;
+        border:1px solid #e5e7eb;
+        border-radius:14px;
+        background:#ffffff;
+        box-shadow:0 4px 14px rgba(15,23,42,0.08);
+    ">
+    <style>
+    table {{
+        border-collapse:collapse;
+        width:100%;
+        font-family:{FONT_FAMILY};
+        font-size:14px;
+    }}
+    th {{
+        background:#111827;
+        color:white;
+        padding:13px 14px;
+        text-align:center;
+        font-weight:700;
+        position:sticky;
+        top:0;
+        z-index:5;
+        white-space:nowrap;
+    }}
+    td {{
+        padding:11px 14px;
+        text-align:center;
+        border-bottom:1px solid #e5e7eb;
+        color:#111827;
+        font-weight:600;
+        white-space:nowrap;
+    }}
+    tr:nth-child(even) td {{
+        background:#f9fafb;
+    }}
+    tr:hover td {{
+        background:#f3f4f6;
+    }}
+    </style>
+    {html_table}
+    </div>
+    """, height=520, scrolling=True)
+
     st.divider()
 
     # ======================================
@@ -6018,30 +6304,230 @@ def show_productivity_page(df, selected_block, selected_week, selected_category)
     st.divider()
 
     # ======================================
-    # 📊 PERFORMANCE SNAPSHOT
+    # 📊 UNIT PERFORMANCE MONITOR
     # ======================================
-    st.subheader("📊 Performance Snapshot (Weekly)")
+    st.subheader("📊 Unit Performance Monitor (Weekly)")
 
-    s_col1, s_col2 = st.columns(2)
-    with s_col1:
-        snap_type_options = ["All"] + sorted(df_view["type"].dropna().unique().tolist())
-        selected_snap_type = st.selectbox("Filter Type", snap_type_options, key="snap_type")
-    with s_col2:
-        snap_sort = st.selectbox("Sort By", ["Actual", "Plan"], key="snap_sort")
+    st.caption(
+        "Pilih 1 Category dan 1 Type untuk melihat seluruh unit pada minggu terpilih."
+    )
 
-    df_snap_filtered = df_view.copy()
-    if selected_snap_type != "All":
-        df_snap_filtered = df_snap_filtered[df_snap_filtered["type"] == selected_snap_type]
+    monitor_category_options = sorted(df_view["category"].dropna().astype(str).unique().tolist())
 
-    df_snap_agg = df_snap_filtered.groupby("category")[["plan", "actual"]].mean().reset_index()
-    df_snap_agg = df_snap_agg.sort_values(snap_sort.lower(), ascending=False)
+    if not monitor_category_options:
+        st.info("Tidak ada category tersedia untuk Unit Performance Monitor.")
+    else:
+        m_col1, m_col2 = st.columns(2)
 
-    cols_snap = st.columns(3)
-    for i, row in df_snap_agg.reset_index(drop=True).iterrows():
-        chart_df = pd.DataFrame({"Type": ["Actual", "Plan"], "Value": [row["actual"], row["plan"]]})
-        fig_snap = build_snapshot_prod_cached(chart_df, row["category"])
-        with cols_snap[i % 3]:
-            st.plotly_chart(fig_snap, use_container_width=True)
+        with m_col1:
+            default_category = selected_category if selected_category != "All" else monitor_category_options[0]
+            default_category_index = (
+                monitor_category_options.index(default_category)
+                if default_category in monitor_category_options
+                else 0
+            )
+
+            monitor_category = st.selectbox(
+                "Category",
+                options=monitor_category_options,
+                index=default_category_index,
+                key="prod_unit_monitor_category"
+            )
+
+        df_monitor_category = df_view[df_view["category"].astype(str) == str(monitor_category)].copy()
+
+        monitor_type_options = sorted(df_monitor_category["type"].dropna().astype(str).unique().tolist())
+
+        with m_col2:
+            if monitor_type_options:
+                monitor_type = st.selectbox(
+                    "Type",
+                    options=monitor_type_options,
+                    index=0,
+                    key="prod_unit_monitor_type"
+                )
+            else:
+                monitor_type = None
+
+        if not monitor_type:
+            st.info("Tidak ada type tersedia untuk category yang dipilih.")
+        else:
+            df_monitor = df_monitor_category[
+                df_monitor_category["type"].astype(str) == str(monitor_type)
+            ].copy()
+
+            if df_monitor.empty:
+                st.info("Tidak ada data unit untuk kombinasi Category dan Type tersebut.")
+            else:
+                monitor_unit_label = get_unit_label(df_monitor)
+                axis_unit_label = f" ({monitor_unit_label})" if monitor_unit_label else ""
+
+                df_unit_perf = (
+                    df_monitor.groupby(["unit_type", "no_lambung"], as_index=False)
+                    .agg(
+                        plan=("plan", "mean"),
+                        actual=("actual", "mean")
+                    )
+                )
+
+                df_unit_perf["unit"] = (
+                    df_unit_perf["unit_type"].astype(str)
+                    + " - "
+                    + df_unit_perf["no_lambung"].astype(str)
+                )
+
+                df_unit_perf["achievement_pct"] = (
+                    df_unit_perf["actual"]
+                    / df_unit_perf["plan"].replace(0, pd.NA)
+                    * 100
+                )
+
+                df_unit_perf = df_unit_perf.sort_values("actual", ascending=False)
+
+                df_unit_melt = df_unit_perf.melt(
+                    id_vars=["unit", "achievement_pct"],
+                    value_vars=["plan", "actual"],
+                    var_name="series",
+                    value_name="value"
+                )
+
+                # --- REVISED COLOR DISCRETE MAP ---
+                fig_unit = px.bar(
+                    df_unit_melt,
+                    x="value",
+                    y="unit",
+                    color="series",
+                    orientation="h",
+                    barmode="group",
+                    text=df_unit_melt["value"].round(1),
+                    template="plotly_white",
+                    color_discrete_map={
+                        "actual": "#2563eb",
+                        "plan": "#f97316"
+                    },
+                    title=f"Unit Productivity - {monitor_category} / {monitor_type}"
+                )
+
+                # --- REVISED GRAPHIC TRACES STYLE ---
+                fig_unit.update_traces(
+                    textposition="outside",
+                    cliponaxis=False,
+                    textfont=dict(
+                        size=15,
+                        color="#000000",
+                        family=FONT_FAMILY
+                    ),
+                    marker=dict(
+                        opacity=0.98,
+                        line=dict(width=1.2, color="#ffffff")
+                    ),
+                    hovertemplate="<b>%{y}</b><br>%{fullData.name}: %{x:.1f}<extra></extra>"
+                )
+
+                # --- REVISED GRAPHIC LAYOUT STYLE ---
+                fig_unit.update_layout(
+                    height=max(560, min(3200, 96 * df_unit_perf["unit"].nunique())),
+                    margin=dict(l=165, r=140, t=85, b=75),
+                    legend_title_text="",
+                    legend=dict(
+                        orientation="h",
+                        yanchor="bottom",
+                        y=1.04,
+                        xanchor="right",
+                        x=1,
+                        font=dict(size=14, color="#000000", family=FONT_FAMILY)
+                    ),
+                    font=dict(family=FONT_FAMILY, size=15, color="#000000"),
+                    plot_bgcolor="#ffffff",
+                    paper_bgcolor="#ffffff",
+                    bargap=0.52,
+                    bargroupgap=0.12,
+                    xaxis=dict(
+                        title=f"Productivity{axis_unit_label}",
+                        tickfont=dict(size=14, color="#000000", family=FONT_FAMILY),
+                        title_font=dict(size=16, color="#000000", family=FONT_FAMILY),
+                        gridcolor="#e5e7eb",
+                        zeroline=False,
+                        showline=True,
+                        linecolor="#111827",
+                        linewidth=1
+                    ),
+                    yaxis=dict(
+                        title="Unit",
+                        tickfont=dict(size=16, color="#000000", family=FONT_FAMILY),
+                        title_font=dict(size=16, color="#000000", family=FONT_FAMILY),
+                        categoryorder="array",
+                        categoryarray=df_unit_perf["unit"].tolist()[::-1],
+                        showline=False
+                    )
+                )
+
+                st.plotly_chart(fig_unit, use_container_width=True)
+
+                df_unit_table = df_unit_perf.copy()
+                df_unit_table["plan"] = df_unit_table["plan"].round(1)
+                df_unit_table["actual"] = df_unit_table["actual"].round(1)
+                df_unit_table["achievement_pct"] = df_unit_table["achievement_pct"].round(1)
+
+                df_unit_table["variance"] = df_unit_table["actual"] - df_unit_table["plan"]
+
+                # --- REVISED UNIT PERFORMANCE MONITOR TABLE COLUMNS ---
+                display_unit_table = pd.DataFrame({
+                    "Unit": df_unit_table["unit"],
+                    f"Plan{axis_unit_label}": df_unit_table["plan"].apply(lambda x: fmt_num(x)),
+                    f"Actual{axis_unit_label}": df_unit_table["actual"].apply(lambda x: fmt_num(x)),
+                    f"Variance{axis_unit_label}": df_unit_table["variance"].apply(lambda x: fmt_variance(x)),
+                    "Achievement": df_unit_table["achievement_pct"].apply(fmt_achievement),
+                })
+
+                unit_html = display_unit_table.to_html(index=False, escape=False, border=0)
+
+                # --- REVISED CSS (UNIT PERFORMANCE TABLE WITH THE SAME WEEKLY SUMMARY STYLE) ---
+                components.html(f"""
+                <div style="
+                    overflow:auto;
+                    max-height:360px;
+                    border:1px solid #e5e7eb;
+                    border-radius:14px;
+                    background:white;
+                    box-shadow:0 4px 14px rgba(15,23,42,0.08);
+                ">
+                <style>
+                table {{
+                    border-collapse:collapse;
+                    width:100%;
+                    font-family:{FONT_FAMILY};
+                    font-size:14px;
+                }}
+                th {{
+                    background:#111827;
+                    color:white;
+                    padding:13px 14px;
+                    text-align:center;
+                    font-weight:700;
+                    position:sticky;
+                    top:0;
+                    z-index:5;
+                    white-space:nowrap;
+                }}
+                td {{
+                    padding:11px 14px;
+                    text-align:center;
+                    border-bottom:1px solid #e5e7eb;
+                    color:#111827;
+                    font-weight:600;
+                    white-space:nowrap;
+                }}
+                tr:nth-child(even) td {{
+                    background:#f9fafb;
+                }}
+                tr:hover td {{
+                    background:#f3f4f6;
+                }}
+                </style>
+                {unit_html}
+                </div>
+                """, height=400, scrolling=True)
 
     st.divider()
 </file>
@@ -6140,18 +6626,22 @@ def build_trend_chart_unit(df_metric, metric_key, metric_label, trend_type):
     df_metric["plan"] = pd.to_numeric(df_metric["plan"], errors="coerce")
     df_metric["actual"] = pd.to_numeric(df_metric["actual"], errors="coerce")
 
-    # Aggregation logic
+    # PATCH FINAL: Penerapan period eksplisit untuk menghindari rename-risk pattern
     if trend_type == "Daily":
+        df_metric = df_metric.copy()
+        df_metric["period"] = pd.to_datetime(df_metric["date"]).dt.normalize()
+
         chart_df = (
-            df_metric.groupby("date", as_index=False, observed=True)[["plan", "actual"]]
+            df_metric.groupby("period", as_index=False, observed=True)[["plan", "actual"]]
             .mean()
-            .rename(columns={"date": "period"})
         )
     else:
+        df_metric = df_metric.copy()
+        df_metric["period"] = pd.to_datetime(df_metric["week_norm"]).dt.normalize()
+
         chart_df = (
-            df_metric.groupby("week_date", as_index=False, observed=True)[["plan", "actual"]]
+            df_metric.groupby("period", as_index=False, observed=True)[["plan", "actual"]]
             .mean()
-            .rename(columns={"week_date": "period"})
         )
 
     chart_df = chart_df.sort_values("period")
@@ -6283,7 +6773,7 @@ def prepare_trend_data(df):
     if df.empty:
         return pd.DataFrame()
 
-    base_cols = ["date", "week_date", "block", "unit_type", "no_lambung", "type", "category"]
+    base_cols = ["date", "week_norm", "block", "unit_type", "no_lambung", "type", "category"]
     existing_base = [c for c in base_cols if c in df.columns]
 
     df_list = []
@@ -6324,7 +6814,7 @@ def build_perf_table_source(df_current):
             "ua_plan", "ua_actual"]
     
     available_cols = [c for c in cols if c in df_current.columns]
-    x = df_current[available_cols].copy()
+    x = df_current[available_cols]
     df_list = []
 
     for m in ["pa", "ma", "ua"]:
@@ -6441,15 +6931,22 @@ def show_unjuk_kerja_page(df, selected_block, selected_week, selected_category):
     </style>
     """, unsafe_allow_html=True)
 
-    df_block = df.copy()
-    
+    df_block = df
+
+    # PATCH: Menggunakan .assign untuk menghindari SettingWithCopyWarning
+    if "date_norm" not in df_block.columns or "week_norm" not in df_block.columns:
+        df_block = df_block.assign(
+            date_norm=pd.to_datetime(df_block["date"], errors="coerce").dt.normalize(),
+            week_norm=pd.to_datetime(df_block["week_date"], errors="coerce").dt.normalize()
+        )
+
     st.markdown("### 🚜 Unjuk Kerja")
     st.markdown("---")
 
     selected_week_ts = pd.to_datetime(selected_week).normalize()
 
-    df_current = df_block[df_block["week_date"].dt.normalize() == selected_week_ts].copy()
-    df_filtered = df_current.copy()
+    df_current = df_block[df_block["week_norm"] == selected_week_ts]
+    df_filtered = df_current
 
     if selected_category != "All":
         df_filtered = df_filtered[df_filtered["category"] == selected_category]
@@ -6458,9 +6955,7 @@ def show_unjuk_kerja_page(df, selected_block, selected_week, selected_category):
         st.warning(f"Data tidak ditemukan untuk minggu tersebut.")
         return
 
-    # ===============================
     # KPI MODE - ONLY FOR KPI CARDS
-    # ===============================
     kpi_mode = st.radio(
         "Mode KPI",
         ["Weekly", "MTD", "YTD", "Custom"],
@@ -6477,47 +6972,42 @@ def show_unjuk_kerja_page(df, selected_block, selected_week, selected_category):
     else:
         custom_range = None
 
-    # PATCH: NORMALIZE KPI SOURCE DATE
-    df_kpi_source = df_block.copy()
-    df_kpi_source["date"] = pd.to_datetime(df_kpi_source["date"], errors="coerce").dt.normalize()
-    df_kpi_source["week_date"] = pd.to_datetime(df_kpi_source["week_date"], errors="coerce").dt.normalize()
+    df_kpi_source = df_block
 
     if kpi_mode == "Weekly":
-        df_kpi = df_filtered.copy()
+        df_kpi = df_filtered
 
     elif kpi_mode == "MTD":
         start_month = selected_week_ts.replace(day=1)
         df_kpi = df_kpi_source[
-            (df_kpi_source["date"] >= start_month) &
-            (df_kpi_source["date"] <= selected_week_ts)
-        ].copy()
+            (df_kpi_source["date_norm"] >= start_month) &
+            (df_kpi_source["date_norm"] <= selected_week_ts)
+        ]
 
     elif kpi_mode == "YTD":
         start_year = selected_week_ts.replace(month=1, day=1)
         df_kpi = df_kpi_source[
-            (df_kpi_source["date"] >= start_year) &
-            (df_kpi_source["date"] <= selected_week_ts)
-        ].copy()
+            (df_kpi_source["date_norm"] >= start_year) &
+            (df_kpi_source["date_norm"] <= selected_week_ts)
+        ]
 
     elif kpi_mode == "Custom" and custom_range and len(custom_range) == 2:
-        # PATCH: NORMALIZE CUSTOM RANGE
         start = pd.to_datetime(custom_range[0]).normalize()
         end = pd.to_datetime(custom_range[1]).normalize()
         df_kpi = df_kpi_source[
-            (df_kpi_source["date"] >= start) &
-            (df_kpi_source["date"] <= end)
-        ].copy()
-
+            (df_kpi_source["date_norm"] >= start) &
+            (df_kpi_source["date_norm"] <= end)
+        ]
     else:
-        df_kpi = df_filtered.copy()
+        df_kpi = df_filtered
 
     if selected_category != "All":
         df_kpi = df_kpi[df_kpi["category"] == selected_category]
 
     if df_kpi.empty:
-        df_kpi = df_filtered.copy()
+        df_kpi = df_filtered
 
-    # KPI CALCULATION ONLY
+    # KPI CALCULATION
     pa = df_kpi["pa_actual"].mean()
     pa_plan = df_kpi["pa_plan"].mean()
     pa_delta = pa - pa_plan
@@ -6530,15 +7020,15 @@ def show_unjuk_kerja_page(df, selected_block, selected_week, selected_category):
     ua_plan = df_kpi["ua_plan"].mean()
     ua_delta = ua - ua_plan
 
-    # WoW CALCULATION - WEEKLY ONLY
-    all_weeks = sorted(df_block["week_date"].dropna().dt.normalize().unique())
+    # WoW CALCULATION
+    all_weeks = sorted(df_block["week_norm"].dropna().unique())
     prev_week = None
     if selected_week_ts in all_weeks:
         idx = all_weeks.index(selected_week_ts)
         if idx > 0:
             prev_week = all_weeks[idx - 1]
 
-    df_prev = df_block[df_block["week_date"].dt.normalize() == prev_week] if prev_week else pd.DataFrame()
+    df_prev = df_block[df_block["week_norm"] == prev_week] if prev_week else pd.DataFrame()
 
     if not df_prev.empty and selected_category != "All":
         df_prev_cat = df_prev[df_prev["category"] == selected_category]
@@ -6568,15 +7058,11 @@ def show_unjuk_kerja_page(df, selected_block, selected_week, selected_category):
     col1, col2, col3, col4 = st.columns(4)
 
     with col1:
-        # PATCH: TOTAL UNIT BASED ON CURRENT WEEK SNAPSHOT
         render_unit_kpi("Total Unit", f"{df_current['no_lambung'].nunique()}", None, None)
-
     with col2:
         render_unit_kpi("Avg PA", f"{format_number(pa)}%", pa_delta, pa_wow)
-
     with col3:
         render_unit_kpi("Avg MA", f"{format_number(ma)}%", ma_delta, ma_wow)
-
     with col4:
         render_unit_kpi("Avg UA", f"{format_number(ua)}%", ua_delta, ua_wow)
 
@@ -6645,7 +7131,7 @@ def show_unjuk_kerja_page(df, selected_block, selected_week, selected_category):
         with col_snap2:
             snap_metric = st.selectbox("Pilih Metric", ["PA", "MA", "UA", "HM"], key="snapshot_metric")
 
-        df_snap = df_block.copy()
+        df_snap = df_block
         if selected_category != "All":
             df_snap = df_snap[df_snap["category"] == selected_category]
         if selected_snap_type != "All":
@@ -6684,7 +7170,6 @@ def show_unjuk_kerja_page(df, selected_block, selected_week, selected_category):
                     c_df = pd.DataFrame({"Type": ["Plan", "Actual"], "Value": [p_val, a_val]})
                 
                 c_df["label"] = c_df["Value"].apply(fmt)
-                
                 fig_s = build_snapshot_chart_unit(c_df, f"{t} - {snap_metric}")
                 
                 with cols_snap[i % 3]:
@@ -6702,7 +7187,7 @@ def show_unjuk_kerja_page(df, selected_block, selected_week, selected_category):
         ).reset_index().sort_values("pa_actual_avg", ascending=False)
     )
     
-    weekly_summary_fmt = weekly_summary.copy()
+    weekly_summary_fmt = weekly_summary
     for col in weekly_summary_fmt.columns:
         if "avg" in col or "total" in col:
             weekly_summary_fmt[col] = weekly_summary_fmt[col].round(1)
@@ -6716,7 +7201,7 @@ def show_unjuk_kerja_page(df, selected_block, selected_week, selected_category):
             st.markdown("##### Tabel Harian (Hour Meter)")
             pivot_hm = df_current.pivot_table(index=["unit_type", "no_lambung"], columns="date", values="hm", aggfunc="mean", observed=True)
             if not pivot_hm.empty:
-                pivot_hm_fmt = pivot_hm.copy().round(2)
+                pivot_hm_fmt = pivot_hm.round(2)
                 pivot_hm_fmt.columns = pd.to_datetime(pivot_hm_fmt.columns).strftime("%d-%b")
                 pivot_hm_fmt = pivot_hm_fmt.reset_index()
                 pivot_hm_fmt.columns.name = None 
@@ -6728,7 +7213,7 @@ def show_unjuk_kerja_page(df, selected_block, selected_week, selected_category):
             if not df_p_table.empty:
                 pivot_perf = df_p_table.pivot_table(index=["Unit", "Metric"], columns="date", values="Value", aggfunc="mean", observed=True)
                 if not pivot_perf.empty:
-                    pivot_perf_fmt = pivot_perf.copy().round(1)
+                    pivot_perf_fmt = pivot_perf.round(1)
                     pivot_perf_fmt.columns = pd.to_datetime(pivot_perf_fmt.columns).strftime("%d-%b")
                     pivot_perf_fmt = pivot_perf_fmt.reset_index()
                     pivot_perf_fmt.columns.name = None 
@@ -6765,8 +7250,9 @@ def show_unjuk_kerja_page(df, selected_block, selected_week, selected_category):
     # 8. TREND PERFORMANCE
     st.markdown("---")
     st.markdown("## 📈 Trend Performance")
-    trend_source = df_block.copy()
-    all_weeks_sorted = sorted(trend_source["week_date"].dropna().dt.normalize().unique().tolist())
+    
+    trend_source = df_block
+    all_weeks_sorted = sorted(trend_source["week_norm"].dropna().unique().tolist())
 
     week_windows = []
     w_size = 10
@@ -6810,10 +7296,11 @@ def show_unjuk_kerja_page(df, selected_block, selected_week, selected_category):
             trend_source = trend_source[(trend_source["unit_type"].astype(str) == u_type_s) & (trend_source["no_lambung"].astype(str) == u_no_s)]
     
     if trend_type == "Weekly" and start_w:
-        trend_source = trend_source[(trend_source["week_date"].dt.normalize() >= start_w) & (trend_source["week_date"].dt.normalize() <= end_w)]
+        trend_source = trend_source[(trend_source["week_norm"] >= start_w) & (trend_source["week_norm"] <= end_w)]
     elif trend_type == "Daily":
-        trend_source = trend_source[trend_source["week_date"].dt.normalize() == selected_week_ts]
+        trend_source = trend_source[trend_source["week_norm"] == selected_week_ts]
 
+    # FIX REDUNDANT: Memanggil fungsi utama directly tanpa wrapper redundant
     trend_long = prepare_trend_data(trend_source)
     
     if not trend_long.empty:
@@ -7718,6 +8205,10 @@ def apply_app_style():
         """,
         unsafe_allow_html=True
     )
+</file>
+
+<file path="README.md">
+
 </file>
 
 </files>
